@@ -1,0 +1,43 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: recoverai-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: recoverai
+      POSTGRES_PASSWORD: recoverai
+      POSTGRES_DB: recoverai
+    ports:
+      - '5432:5432'
+    volumes:
+      - recoverai-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U recoverai -d recoverai']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: .
+      dockerfile: packages/backend/Dockerfile
+    container_name: recoverai-backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 8080
+      # Inside the compose network the database is reachable by service name.
+      DATABASE_URL: postgres://recoverai:recoverai@db:5432/recoverai
+    # Secrets come from a local .env file, which is gitignored. Compose
+    # tolerates the file being absent, so mock-mode runs need no setup.
+    env_file:
+      - path: .env
+        required: false
+    ports:
+      - '8080:8080'
+
+volumes:
+  recoverai-pgdata:

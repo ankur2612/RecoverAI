@@ -1,0 +1,139 @@
+import { z } from 'zod';
+import {
+  CURRENCIES,
+  FAILURE_REASONS,
+  PAYMENT_STATUSES,
+  RECOVERY_CASE_STATUSES,
+} from '../shared/types.ts';
+
+/**
+ * Request validation schemas.
+ *
+ * Every field arriving from a client is validated here before it reaches
+ * business logic. Derived fields are deliberately NOT accepted from clients:
+ * risk scores, classifications, recoverability, and confidence are computed by
+ * the system, never supplied by a caller.
+ */
+
+/** Identifier: bounded length, conservative charset, no whitespace or quotes. */
+const identifier = (label: string) =>
+  z
+    .string({ required_error: `${label} is required`, invalid_type_error: `${label} must be a string` })
+    .trim()
+    .min(1, `${label} must not be empty`)
+    .max(64, `${label} must be 64 characters or fewer`)
+    .regex(/^[A-Za-z0-9_-]+$/, `${label} may contain only letters, digits, underscore and hyphen`);
+
+/**
+ * Money: a positive integer in the smallest currency unit.
+ *
+ * Rejects floats outright rather than rounding — a fractional paise means the
+ * caller has a unit bug, and silently rounding it would corrupt the ledger.
+ */
+const amountMinorUnits = z
+  .number({ required_error: 'amount is required', invalid_type_error: 'amount must be a number' })
+  .int('amount must be an integer in the smallest currency unit (paise), not a decimal')
+  .positive('amount must be greater than zero')
+  .max(Number.MAX_SAFE_INTEGER, 'amount exceeds the maximum safe integer');
+
+/** ISO-8601 timestamp that must parse to a real date. */
+const isoTimestamp = z
+  .string()
+  .datetime({ offset: true, message: 'created_at must be an ISO-8601 timestamp' })
+  .refine((value) => !Number.isNaN(Date.parse(value)), {
+    message: 'created_at must be a valid date',
+  });
+
+/**
+ * POST /api/payments body, matching the PRD payment shape (snake_case wire
+ * format, camelCase internally).
+ *
+ * `.strict()` rejects unknown fields so a client cannot smuggle in a
+ * `risk_score`, `classification`, or `ground_truth` value.
+ */
+export const createPaymentSchema = z
+  .object({
+    payment_id: identifier('payment_id'),
+    order_id: identifier('order_id'),
+    customer_id: identifier('customer_id'),
+    merchant_id: identifier('merchant_id'),
+    amount: amountMinorUnits,
+    currency: z.enum(CURRENCIES, {
+      errorMap: () => ({ message: `currency must be one of ${CURRENCIES.join(', ')}` }),
+    }),
+    status: z.enum(PAYMENT_STATUSES, {
+      errorMap: () => ({ message: `status must be one of ${PAYMENT_STATUSES.join(', ')}` }),
+    }),
+    failure_reason: z
+      .enum(FAILURE_REASONS, {
+        errorMap: () => ({ message: `failure_reason must be one of ${FAILURE_REASONS.join(', ')}` }),
+      })
+      .nullish(),
+    attempt_count: z.number().int().min(0).max(100).optional().default(0),
+    is_subscription: z.boolean().optional().default(false),
+    created_at: isoTimestamp.optional(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    // A failed payment with no reason is not actionable, and a captured
+    // payment with a failure reason is contradictory. Reject both rather than
+    // storing incoherent data.
+    const isFailure = value.status === 'failed' || value.status === 'abandoned';
+    if (isFailure && (value.failure_reason === null || value.failure_reason === undefined)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['failure_reason'],
+        message: `failure_reason is required when status is "${value.status}"`,
+      });
+    }
+    if (value.status === 'captured' && value.failure_reason) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['failure_reason'],
+        message: 'failure_reason must not be set when status is "captured"',
+      });
+    }
+  });
+
+export type CreatePaymentBody = z.infer<typeof createPaymentSchema>;
+
+/** GET /api/payments query parameters. */
+export const listPaymentsQuerySchema = z
+  .object({
+    merchant_id: identifier('merchant_id').optional(),
+    customer_id: identifier('customer_id').optional(),
+    status: z.enum(PAYMENT_STATUSES).optional(),
+    limit: z.coerce.number().int().min(1).max(200).optional().default(50),
+    offset: z.coerce.number().int().min(0).optional().default(0),
+  })
+  .strict();
+
+/** GET /api/recovery/cases query parameters. */
+export const listCasesQuerySchema = z
+  .object({
+    status: z.enum(RECOVERY_CASE_STATUSES).optional(),
+    limit: z.coerce.number().int().min(1).max(200).optional().default(50),
+    offset: z.coerce.number().int().min(0).optional().default(0),
+  })
+  .strict();
+
+/**
+ * POST /api/recovery/analyze body.
+ *
+ * Accepts a payment id to analyze. It does NOT accept a classification,
+ * confidence, or recommended action — those are outputs of the system, and
+ * letting a client supply them would let a caller bypass detection entirely.
+ */
+export const analyzeRequestSchema = z
+  .object({
+    payment_id: identifier('payment_id'),
+  })
+  .strict();
+
+/** Flatten a ZodError into a stable, client-safe shape. */
+export function formatZodIssues(error: z.ZodError): { field: string; message: string }[] {
+  return error.issues.map((issue) => ({
+    field: issue.path.join('.') || '(body)',
+    message: issue.message,
+  }));
+}

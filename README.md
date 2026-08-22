@@ -1,0 +1,725 @@
+# RecoverAI
+
+**AI Revenue Recovery Agent** — Razorpay AI Buildathon, Track 03.
+
+RecoverAI detects revenue at risk, diagnoses why it is at risk, selects a bounded
+recovery action, validates that action against a deterministic policy engine,
+executes only what policy permits, and measures what was actually recovered.
+
+> **AI recommends. Policies authorize. APIs execute. Evidence verifies.**
+>
+> The LLM never calls a payment API and never decides whether money moves.
+
+---
+
+## Build status
+
+This repository is being built incrementally against the RecoverAI PRD. The
+current state is **P0 items 1–4** (foundation). See
+[Roadmap](#roadmap) for exactly what does and does not work yet.
+
+| Area | Status |
+| --- | --- |
+| Monorepo scaffold, TypeScript, strict config | Working |
+| PostgreSQL schema + forward-only migrations | Working, **verified against live PostgreSQL 16.14** |
+| Deterministic synthetic data generator | Working, verified reproducible |
+| Config + policy loading, secret redaction | Working |
+| Payment ingestion + retrieval | Working |
+| Deterministic revenue-risk detection | Working |
+| AI provider abstraction + MockAI | Working, deterministic |
+| Structured AI diagnosis + strict validation | Working |
+| Ground-truth boundary (compile + runtime + architectural) | Working |
+| Recovery case persistence | Working |
+| **Deterministic policy engine (authorization)** | **Working** |
+| **Recovery executor + idempotency (execution)** | **Working** |
+| Outcome verification, Razorpay, dashboard | **Not built yet** |
+
+---
+
+## Quick start
+
+Requires **Node.js >= 20.10**. Docker is optional but is the easiest way to get
+PostgreSQL.
+
+```bash
+npm install
+cp .env.example .env        # defaults work as-is; no API keys required
+```
+
+### Generate a dataset (no database needed)
+
+```bash
+npm run seed -- --summary-only
+```
+
+Produces a reproducible 1,000-record dataset from seed 42 and prints its
+composition. Nothing is written unless you pass `--out` or `--db`.
+
+```
+RecoverAI synthetic dataset
+---------------------------
+seed                 42
+records              1000 (dev 699 / eval 301)
+merchants            4
+customers            551
+revenue at risk      INR 20,16,914.65
+  of which recoverable INR 17,61,304.15
+
+by payment status
+  abandoned              63
+  captured               525
+  failed                 412
+
+by ground-truth classification (non-captured only)
+  CHECKOUT_ABANDONMENT       63
+  CUSTOMER_ACTION_REQUIRED   59
+  PAYMENT_METHOD_PROBLEM     97
+  REPEATED_FAILURE           31
+  SUBSCRIPTION_FAILURE       48
+  TEMPORARY_FAILURE          155
+  UNKNOWN                    22
+```
+
+Those figures are counted from the generated data, not asserted.
+
+### With a database
+
+```bash
+docker compose up -d db     # PostgreSQL on :5432
+npm run migrate             # apply schema
+npm run seed -- --db        # generate and persist
+npm run dev                 # backend on :8080
+curl http://localhost:8080/api/health
+```
+
+### Tests
+
+```bash
+npm test            # 311 tests (integration tests skip without a database)
+npm run typecheck
+npm run build
+```
+
+### Tests against a real database
+
+Integration tests run only when a database URL is supplied, so the suite stays
+runnable on a machine with no PostgreSQL:
+
+```bash
+RECOVERAI_TEST_DATABASE_URL=postgres://user:pass@host:port/db npm test
+# 372 tests (adds 61 live-database integration tests)
+```
+
+---
+
+## Dataset CLI
+
+```
+npm run seed -- [options]
+
+  --seed=42          PRNG seed
+  --count=1000       number of payment records
+  --eval-split=0.3   fraction held out for evaluation
+  --out=path.json    write the dataset to a file
+  --db               persist into PostgreSQL
+  --summary-only     print the summary and write nothing
+```
+
+Writing to the database is opt-in, so an accidental run cannot clobber data.
+
+### Reproducibility
+
+The same seed produces a **byte-identical** dataset on every run:
+
+```bash
+npm run seed -- --out=/tmp/a.json
+npm run seed -- --out=/tmp/b.json
+sha256sum /tmp/a.json /tmp/b.json   # identical
+```
+
+This holds because the generator uses a seeded mulberry32 PRNG (never
+`Math.random`) and pins its reference clock (`DEFAULT_NOW`) instead of reading
+wall-clock time. Both properties are covered by tests.
+
+---
+
+## Architecture
+
+```
+Payment events
+      |
+      v
+Revenue risk detection          deterministic
+      |
+      v
+AI diagnosis  (Claude | OpenAI | MockAI)     <-- recommends only
+      |
+      v  RecoveryRecommendation (structured JSON)
+Deterministic policy engine                   <-- authorizes
+      |
+   +--+--------------+
+   |                 |
+ALLOWED          BLOCKED / REQUIRES_APPROVAL
+   |                 |
+   v                 v
+Action executor   Audit log
+   |
+   v
+Payment provider (RazorpayTestProvider | MockProvider)
+   |
+   v
+Outcome  -->  Audit log  -->  Metrics
+```
+
+The AI produces a recommendation. It cannot execute, cannot reach a secret, and
+cannot widen a policy limit. Every financial action passes a deterministic
+check whose inputs are configuration, not model output.
+
+### Layout
+
+```
+packages/backend/src/
+├── api/          health, payments, recovery routes + request schemas
+├── agents/
+│   └── diagnosis/  provider interface, prompt contract, input boundary,
+│                   strict output validation, providers/mock.ts
+├── policies/     engine.ts, types.ts, input.ts — AUTHORIZATION
+├── payments/     repository, provider.ts, providers/mock.ts, factory.ts
+├── risk/         detector.ts, types.ts — deterministic detection
+├── recovery/     analyze.ts, executor.ts, execute-service.ts,
+│                 repository.ts, action-repository.ts
+├── audit/        append-only audit writes
+├── analytics/    metrics + evaluation                   (empty — next phase)
+├── datasets/     synthetic data generator
+├── db/           pool, type parsers, migrations, runner
+├── jobs/         batch processing                       (empty — next phase)
+├── config/       env loading, policy values, redaction
+└── shared/       domain types, seeded RNG
+```
+
+Directories marked empty are placeholders for later phases — see
+[Roadmap](#roadmap).
+
+---
+
+## Data model
+
+Six entities plus a deliberately separated labels table.
+
+| Table | Purpose |
+| --- | --- |
+| `merchants` | Merchant identity and currency |
+| `customers` | Customer, scoped to a merchant |
+| `payments` | Payment events; `amount` is BIGINT in minor units |
+| `payment_ground_truth` | Synthetic labels — **evaluation only** |
+| `recovery_cases` | One diagnosis of one at-risk payment |
+| `recovery_actions` | One attempted action, with its idempotency key |
+| `audit_events` | Append-only decision log |
+
+Safety properties enforced by the schema itself, not by application code:
+
+- **Money is `BIGINT` in minor units.** Paise, never rupees; never a float.
+- **`idempotency_key` is `UNIQUE`.** Duplicate protection survives a race,
+  because the database rejects the second insert.
+- **One live case per payment.** A partial unique index over
+  `('OPEN','AWAITING_APPROVAL','EXECUTING')` stops two concurrent analyses from
+  producing two competing recovery attempts for the same money.
+- **The audit log is append-only.** `BEFORE UPDATE` and `BEFORE DELETE`
+  triggers raise, so the log is immutable from the normal application
+  interface.
+- **Ground truth is a separate table.** Labels are structurally unavailable to
+  anything that builds an AI prompt, so they cannot leak into a diagnosis.
+
+---
+
+## Configuration
+
+Every value lives in the environment; see [.env.example](.env.example).
+**No business policy is hardcoded in an LLM prompt.**
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `AI_PROVIDER` | `mock` | `mock` \| `claude` \| `openai` |
+| `PAYMENT_PROVIDER` | `mock` | `mock` \| `razorpay` |
+| `POLICY_MAX_RETRY_ATTEMPTS` | `3` | Retry ceiling per payment |
+| `POLICY_MAX_AUTOMATED_AMOUNT` | `1000000` | Paise (INR 10,000) |
+| `POLICY_MIN_RECOVERY_CONFIDENCE` | `0.75` | Below this, no auto-execution |
+| `POLICY_RETRY_COOLDOWN_SECONDS` | `3600` | Minimum gap between retries |
+| `POLICY_HIGH_VALUE_THRESHOLD` | `1000000` | At/above this, human approval |
+| `DATASET_SEED` | `42` | Reproducibility seed |
+
+`mock` is the default for both providers so that tests and the batch demo run
+with **no API keys, no cost, and no variance between runs**.
+
+### Secret handling
+
+- Secrets are read from the environment server-side only, never sent to the
+  frontend.
+- `.env` is gitignored; only `.env.example` (with empty values) is committed.
+- `redactedConfig()` reduces every secret to a presence flag before anything is
+  logged or returned over HTTP. A test asserts no secret string survives
+  serialisation.
+- **Live Razorpay keys are refused at startup.** A `RAZORPAY_KEY_ID` not
+  prefixed `rzp_test_` throws a `ConfigError`, so the system cannot be pointed
+  at real money even by mistake.
+
+---
+
+## Synthetic dataset
+
+Records are drawn from a catalogue of ten labelled scenarios
+([`scenarios.ts`](packages/backend/src/datasets/scenarios.ts)). Choosing the
+scenario first, then materialising a payment from it, means ground-truth labels
+cannot silently drift out of sync with the data.
+
+Roughly 55% of records are successful payments, with the rest spread across the
+failure classes the PRD requires — including non-recoverable and permanent
+failures, so a trivial "always retry" agent scores badly rather than perfectly.
+
+The dev/eval split is **stratified by class**, so a rare scenario (for example
+`high_value_failure`) is guaranteed to appear in the held-out set rather than
+landing entirely in dev by chance.
+
+---
+
+## API
+
+| Endpoint | Status |
+| --- | --- |
+| `GET /api/health` | Working |
+| `POST /api/payments` | Working |
+| `GET /api/payments` | Working |
+| `GET /api/payments/:paymentId` | Working |
+| `POST /api/recovery/analyze` | Working — **analysis + authorization** |
+| `GET /api/recovery/cases` | Working |
+| `POST /api/recovery/:caseId/execute` | Working — **the only endpoint that acts** |
+| `GET /api/recovery/:caseId/actions` | Working |
+| approval endpoints in PRD §25 | Not built yet |
+
+`/api/health` returns `200` when the database is reachable and `503` when it is
+not, with the failure reason included and all credentials redacted.
+
+### POST /api/payments
+
+Ingests one payment event in the PRD wire shape. Stores an observation only —
+it runs no analysis and contacts no payment provider.
+
+```bash
+curl -X POST http://localhost:8080/api/payments   -H 'Content-Type: application/json'   -d '{
+    "payment_id": "pay_demo_123",
+    "order_id": "order_demo_123",
+    "customer_id": "cust_456",
+    "merchant_id": "merchant_001",
+    "amount": 249900,
+    "currency": "INR",
+    "status": "failed",
+    "failure_reason": "gateway_timeout",
+    "created_at": "2026-08-22T10:30:00Z"
+  }'
+```
+
+Validation rejects: non-integer amounts (a fractional paise means a unit bug),
+non-positive amounts, unknown statuses or currencies, a `failed` payment with no
+failure reason, a `captured` payment that has one, and **any unknown field** —
+so a client cannot inject a `risk_score` or `classification`.
+
+Returns `201` on success, `400` on validation failure, `409` on a duplicate id,
+`422` when the merchant or customer does not exist.
+
+### POST /api/recovery/analyze
+
+Runs the full analysis pipeline for one payment and returns the result.
+
+```bash
+curl -X POST http://localhost:8080/api/recovery/analyze   -H 'Content-Type: application/json'   -d '{"payment_id": "pay_demo_123"}'
+```
+
+Real output from a live run against the PRD's example payment:
+
+```json
+{
+  "risk": {
+    "at_risk": true,
+    "revenue_at_risk": 249900,
+    "classification": "TEMPORARY_FAILURE",
+    "recoverability": "HIGH",
+    "recoverability_score": 0.8,
+    "risk_score": 0.525,
+    "baseline_action": "RETRY",
+    "requires_human_review": false,
+    "factors": ["failure_reason=gateway_timeout", "base_recoverability=0.80",
+                "customer_history=none"]
+  },
+  "diagnosis": {
+    "classification": "TEMPORARY_FAILURE",
+    "confidence": 0.92,
+    "reason": "Gateway timeout is a transient gateway-side fault that commonly succeeds on retry; 3 attempt(s) remain.",
+    "recommended_action": "RETRY",
+    "expected_recovery_probability": 0.8,
+    "requires_human_approval": false,
+    "provider": "mock",
+    "model": "deterministic"
+  },
+  "recovery_case": { "status": "OPEN", "...": "..." },
+  "authorized": false,
+  "executed": false
+}
+```
+
+`authorized: false` and `executed: false` are always present and always false in
+this phase. **This endpoint analyzes. It does not authorize, execute, retry,
+refund, notify anyone, or contact any payment provider.**
+
+Re-analyzing a payment that already has a live case returns that case with
+`existing_case: true` rather than creating a competing one.
+
+---
+
+## The deterministic policy engine
+
+The AI produces a recommendation. **This layer decides whether it is allowed.**
+Nothing the model returns can widen a limit or skip a rule — the recommendation
+arrives as an ordinary input field, `proposedAction`, and is checked like any
+other value.
+
+`evaluatePolicy(input, config)` is a **pure function**: no database, no network,
+no clock, no randomness, no LLM. Architectural tests enforce all of that at the
+import level, and assert the engine contains no `Date.now()`, no `Math.random`,
+and no `await`.
+
+### Three invariants
+
+1. **Fail closed.** A missing payment id, a fractional amount, a `NaN`
+   confidence, or an unrecognised payment status all produce
+   `authorized: false`. No code path defaults to permission.
+
+2. **Approval is not authorization.** A rule returning `REQUIRES_APPROVAL` sets
+   `requiresHumanApproval: true` and leaves `authorized: false`. "A human must
+   look at this" is never silently upgraded into "go ahead".
+
+3. **Value never overrides safety** (PRD §16). Expected recovery value is not
+   an input to this layer at all — there is no field for it — so a ₹10,00,000
+   opportunity is blocked exactly as readily as a ₹10 one.
+
+### Rules
+
+| Rule | Blocks when |
+| --- | --- |
+| `REQUIRED_INFORMATION_PRESENT` | id, amount, confidence, or attempts missing/invalid |
+| `ACTION_SUPPORTED` | the action is not one of the six supported strategies |
+| `PAYMENT_STATE_KNOWN` | the payment status is unrecognised |
+| `PAYMENT_NOT_ALREADY_RECOVERED` | the payment is already recovered |
+| `PAYMENT_STATE_NOT_CONFLICTING` | already captured or refunded |
+| `PAYMENT_ELIGIBLE_FOR_RECOVERY` | the status cannot support a recovery action |
+| `NO_DUPLICATE_ACTION` | an equivalent action already exists |
+| `RETRY_LIMIT_AVAILABLE` | attempts have reached `POLICY_MAX_RETRY_ATTEMPTS` |
+| `RETRY_COOLDOWN_ELAPSED` | the cooldown since the last attempt has not passed |
+| `AMOUNT_WITHIN_AUTOMATED_LIMIT` | *gates on approval* above `POLICY_MAX_AUTOMATED_AMOUNT` |
+| `CONFIDENCE_SUFFICIENT` | confidence is below `POLICY_MIN_RECOVERY_CONFIDENCE` |
+| `HIGH_VALUE_APPROVAL` | *gates on approval* at/above `POLICY_HIGH_VALUE_THRESHOLD` |
+
+Every rule is evaluated even after an earlier one fails, so an operator sees the
+complete picture rather than only the first objection. Each decision carries a
+`policy_version` (currently `v1`).
+
+Rules that do not apply to an action are reported `NOT_APPLICABLE` rather than
+passed: a reminder consumes no retry budget, so an exhausted budget must not
+block the one action that could still recover the payment.
+
+### Verified behaviour
+
+Real output from a live run, matching the PRD's worked examples:
+
+| Case | AI says | Policy | `authorized` | Reason |
+| --- | --- | --- | --- | --- |
+| ₹2,499 timeout, 0 attempts | RETRY | `ALLOWED` | `true` | — |
+| ₹25,000 timeout | RETRY | `REQUIRES_APPROVAL` | `false` | `HIGH_VALUE_REQUIRES_APPROVAL` |
+| attempts = 3 | RETRY | `BLOCKED` | `false` | `MAX_RETRIES_EXCEEDED` |
+| confidence 0.54 | RETRY | `BLOCKED` | `false` | `INSUFFICIENT_CONFIDENCE` |
+| already recovered | RETRY | `BLOCKED` | `false` | `PAYMENT_ALREADY_RECOVERED` |
+| duplicate action | RETRY | `BLOCKED` | `false` | `DUPLICATE_ACTION` |
+| unknown status | RETRY | `BLOCKED` | `false` | `UNKNOWN_PAYMENT_STATE` |
+
+Note the second row: the AI still recommends RETRY, and policy still refuses to
+authorize it. That is the separation working.
+
+**Authorization is not execution.** `/api/recovery/analyze` now returns a real
+computed `authorized`, but `executed` remains constantly `false` — no executor
+exists, and no payment provider is imported anywhere in the codebase.
+
+---
+
+## The recovery executor
+
+The first component permitted to cause an effect outside this process — and the
+one with the least authority. It makes **no decisions**: it does not read the AI
+recommendation, does not run the policy engine, and cannot re-authorize
+anything. An architectural test asserts it never imports `evaluatePolicy`.
+
+```
+POST /api/recovery/:caseId/execute
+        │
+        ├─ execute-service: re-runs risk detection + policy against CURRENT
+        │  state, so an analysis-time verdict can never authorize execution
+        │
+        └─ executor
+             ├─ refuse unless policy.authorized === true      (no provider call)
+             ├─ refuse if policy.requiresHumanApproval        (no provider call)
+             ├─ refuse a missing idempotency key              (no provider call)
+             ├─ refuse a non-executable action                (no provider call)
+             ├─ CLAIM the idempotency key in PostgreSQL ◄── the race is settled here
+             ├─ provider.executeAction()                      (only if claimed)
+             └─ persist the verdict + audit
+```
+
+### Idempotency
+
+The key is the **logical action**, not the HTTP request:
+
+```
+recovery:{caseId}:{actionType}:{policyVersion}
+```
+
+Submitting the same case twice produces the same key, so the second attempt
+collides and never reaches the provider. A per-request random key would defeat
+this entirely.
+
+Enforcement is the database's `UNIQUE` constraint, via
+`INSERT ... ON CONFLICT (idempotency_key) DO NOTHING`. This is deliberately
+**not** a read-then-write check: two concurrent callers can both read "no
+existing action", so only the database can arbitrate. **The provider is never
+called before the insert establishes ownership.**
+
+Verified against live PostgreSQL: **5 simultaneous execution attempts for the
+same logical action produce exactly 1 provider call and 1 action row.**
+
+### Execution states
+
+| State | Meaning |
+| --- | --- |
+| `PENDING` | key claimed, provider not yet called |
+| `EXECUTING` | provider request in flight |
+| `SUCCESS` | provider accepted the request |
+| `FAILED` | provider explicitly rejected it |
+| `UNCONFIRMED` | outcome **UNKNOWN** — a safety state |
+| `SKIPPED_DUPLICATE` | an equivalent action already owned the key |
+
+**`UNCONFIRMED` is not a failure.** It means we do not know whether the action
+took effect. It is never collapsed into `FAILED` and never resolved by an
+automatic retry — only by verifying provider/payment state. A thrown transport
+error is classified `UNKNOWN` rather than `FAILED` for the same reason: an
+exception does not prove the remote side did nothing.
+
+### Success is not recovery
+
+`EXECUTION_SUCCEEDED` means **the provider accepted the request**. It does not
+mean revenue was recovered.
+
+`verified` is therefore hardcoded `false` throughout this phase, the payment
+row is never mutated by execution, and the audit metadata says so explicitly
+(`"note": "provider_accepted_request_recovery_not_verified"`). Outcome
+verification is a later phase.
+
+### Verified behaviour
+
+Real output from a live run:
+
+| Case | Policy | Executor | Provider calls | Action rows |
+| --- | --- | --- | --- | --- |
+| ₹2,499 retry | `ALLOWED` | `EXECUTION_SUCCEEDED` | 1 | 1 |
+| ₹25,000 | `REQUIRES_APPROVAL` | `REFUSED` (403) | **0** | **0** |
+| retries exhausted | `BLOCKED` | `REFUSED` (409) | **0** | **0** |
+| duplicate submit | — | `REFUSED` | 0 (unchanged) | 1 (unchanged) |
+| 5× concurrent | `ALLOWED` | 1 executes | **1** | **1** |
+| provider timeout | `ALLOWED` | `EXECUTION_UNKNOWN` | 1 | 1 (`UNCONFIRMED`) |
+
+Razorpay is **not** integrated: the SDK is not installed, no module imports it,
+and requesting `PAYMENT_PROVIDER=razorpay` throws rather than silently
+simulating money movement.
+
+---
+
+## The AI safety boundary
+
+The single most important property in this codebase: **evaluation labels can
+never reach an AI provider.** If they did, every accuracy metric would be
+meaningless — the model would be graded on data it was handed.
+
+This is enforced four ways, deliberately redundant:
+
+1. **Structurally.** `DiagnosisInput` extends `ForbiddenEvaluationKeys`, which
+   types every label-shaped key (`groundTruth`, `recoverable`, `ideal_action`,
+   `split`, …) as `never`. An object literal carrying one fails to compile.
+
+2. **At runtime.** `assertNoEvaluationData()` walks the finished input to any
+   depth and throws `EvaluationDataLeakError` on a forbidden key — catching
+   values that arrive as `unknown` from a database row or parsed JSON, where
+   the type system cannot help.
+
+3. **By construction.** `buildDiagnosisInput()` copies named fields only. There
+   is no spread of a payment row anywhere in it, so a ground-truth column added
+   to the database later cannot ride along into a prompt by accident.
+
+4. **Architecturally.** A test walks every file under `src/agents/` and fails if
+   any of them imports the database layer, a payment provider, an executor, or a
+   vendor SDK — or so much as mentions the labels table. The executor does not
+   exist yet; the test fails the moment someone adds one and wires it to the AI
+   layer, which is exactly when it matters.
+
+The realistic leak scenario is covered directly: a test takes a real generated
+dataset record (which genuinely carries ground truth), pushes it through the
+builder, and asserts that neither the resulting input nor the **rendered prompt
+text** contains any label.
+
+### What the AI cannot do
+
+- It has no database handle, no payment provider client, and no HTTP client.
+- Its interface exposes exactly one method: `diagnose()`.
+- Its return type has no `executed`, `recovered`, `authorized`, or
+  `transactionId` field — there is nowhere to put a claimed outcome.
+- Its output passes a `.strict()` schema, so a response containing
+  `payment_id`, `api_endpoint`, or `execute` is **rejected**, not ignored.
+- Confidence and probability outside `[0,1]`, unknown classifications, unknown
+  actions, and malformed JSON are all rejected.
+
+### Failure is not fatal
+
+If the provider throws or returns something the validator rejects, analysis
+still completes using the deterministic assessment, and the failure is recorded
+in the audit trail. The system degrades to rules rather than to nothing.
+
+---
+
+## Deterministic risk detection
+
+Detection runs **before** any AI involvement and is a pure function — no clock,
+no randomness, no database, no network. It gives the system a defensible
+baseline that holds when the AI is unavailable or misbehaving.
+
+Two invariants it never violates:
+
+- **A non-retryable failure never yields RETRY.** An expired card, an invalid
+  CVV, an unsupported method, or a declined card cannot succeed on retry, and
+  repeated declines can trip issuer fraud controls.
+- **An exhausted retry budget never yields RETRY.** Once attempts reach the
+  configured ceiling the classification becomes `REPEATED_FAILURE` regardless of
+  the underlying reason — a gateway timeout that has already failed three times
+  is not a fresh transient blip.
+
+Captured and refunded payments are never treated as revenue at risk, and never
+trigger an AI call. Unknown failures escalate rather than guessing, per PRD §10
+(`UNKNOWN_FAILURE = no automatic action`).
+
+---
+
+## Roadmap
+
+Built (P0 1–5, 9 partial):
+
+- [x] Monorepo scaffold, strict TypeScript, Docker Compose
+- [x] PostgreSQL schema and forward-only migration runner (**live-verified**)
+- [x] Deterministic synthetic dataset generator with stratified split
+- [x] Configuration, policy loading, secret redaction
+- [x] Health endpoint
+- [x] Payment ingestion and retrieval
+- [x] Deterministic revenue-risk detection and recoverability scoring
+- [x] AI provider abstraction with deterministic MockAI
+- [x] Structured diagnosis with strict schema validation
+- [x] Ground-truth boundary (compile-time, runtime, architectural)
+- [x] Recovery case persistence
+- [x] Audit trail writes for every decision
+- [x] **Deterministic policy engine** — the authorization step
+- [x] **Recovery executor** — the execution step, with database-enforced
+      idempotency and safe UNKNOWN handling
+
+Next: **outcome verification** (turning a provider acknowledgement into
+evidence of recovered revenue), then Razorpay Test Mode integration, the
+approval workflow, dashboard, and batch metrics.
+
+Then (P1): failure simulation, manual approval workflow, held-out evaluation
+with precision/recall/F1 scored against `payment_ground_truth`.
+
+---
+
+## Database verification
+
+The schema has been applied to a real PostgreSQL 16.14 server (a disposable
+cluster created with `initdb` on port 55432, isolated from any existing
+database). Verified there, not merely asserted:
+
+| Property | Result |
+| --- | --- |
+| All 8 tables created | Verified |
+| Expected indexes present | Verified |
+| Migration is idempotent (second run applies nothing) | Verified |
+| BIGINT amounts round-trip as exact numbers at `MAX_SAFE_INTEGER` | Verified |
+| Negative amounts rejected (`payments_amount_positive`) | Verified |
+| Invalid status rejected (`payments_status_check`) | Verified |
+| Duplicate `idempotency_key` rejected | Verified |
+| Second live recovery case per payment rejected | Verified |
+| A new case is allowed once the previous one is closed | Verified |
+| `UPDATE` on `audit_events` raises `append-only` | Verified |
+| `DELETE` on `audit_events` raises `append-only` | Verified |
+| Orphan foreign keys rejected | Verified |
+
+---
+
+## Known limitations
+
+Stated plainly, because the PRD asks for honest reporting:
+
+1. **No real LLM provider is implemented.** Only MockAI exists. The Claude and
+   OpenAI providers are defined in the config and the factory, but constructing
+   one **throws** rather than silently falling back to MockAI — a misconfigured
+   deployment fails loudly instead of producing plausible fake diagnoses.
+   MockAI is a transparent rule-based diagnoser, not a simulated LLM, and its
+   accuracy figures say nothing about how a real model would perform.
+2. **No outcome verification.** A provider `SUCCESS` is recorded as
+   "the request was accepted", never as recovered revenue. `verified` is
+   hardcoded `false`, and no metric counts recovered money yet.
+3. **Only `RETRY` is executable.** `REMINDER`, `CHECKOUT_RECOVERY`, and
+   `SUBSCRIPTION_RETRY` are authorized by policy but no provider can perform
+   them, so the executor refuses them as `UNSUPPORTED_ACTION` rather than
+   pretending to act.
+4. **`UNCONFIRMED` actions have no resolution path.** They are persisted, never
+   retried, and block further action on the payment — but nothing yet queries
+   provider state to resolve them. That is manual for now.
+5. **The idempotency key includes the policy version.** Bumping the version
+   permits one further execution of a case that already executed under the old
+   rules. That is a deliberate trade-off (a different rule set is arguably a
+   different logical action) but it must become an explicit decision once the
+   approval flow lands.
+6. **No Razorpay integration.** `PAYMENT_PROVIDER=razorpay` throws rather than
+   falling back to the mock. No real money can move.
+7. **No accuracy metrics are computed yet.** `payment_ground_truth` is
+   populated by the seeder and structurally walled off from the AI, but nothing
+   scores predictions against it. No precision/recall/F1 exists — reporting any
+   would be fabrication.
+8. **`recoveryProbability` in the dataset is a simulation parameter**, not a
+   measured quantity. It defines what a future simulated executor will do; it is
+   not evidence of real-world recoverability.
+9. **The `attempt_count` on an ingested payment is client-supplied.** Until the
+   executor exists there is no server-side retry ledger to reconcile it against,
+   so a caller could understate prior attempts. The retry ceiling is enforced
+   against the value stored.
+10. **Docker is not installed in the development environment used so far**, so
+   `docker compose up -d db` and the container build are still unexercised. The
+   schema was verified against a locally-installed PostgreSQL 16.14 instead.
+11. **`npm test` and `npm run build` may fail on Windows** if `node` is not on
+   the PATH that npm hands to `cmd.exe`, even when it is available in your
+   shell. Running `node --experimental-strip-types --test "tests/**/*.test.ts"`
+   directly works regardless.
+12. **No authentication.** Every endpoint is unauthenticated. Acceptable while
+   nothing can move money; it must be addressed before the executor lands.
+
+---
+
+## Engineering principles
+
+1. **Safety before cleverness.** The AI cannot move money. The policy engine is
+   deterministic, configurable, and testable in isolation.
+2. **Fail visibly.** A failed API call is recorded as `FAILED` or
+   `UNCONFIRMED` — never silently retried, never reported as success.
+3. **Never fabricate a number.** Every metric is computed from stored outcomes.
+   Where something is not yet measured, this README says so.
+4. **Money is an integer.** Minor units end to end, `BIGINT` in the database.
