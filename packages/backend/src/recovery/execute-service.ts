@@ -7,7 +7,7 @@ import { assessRisk } from '../risk/detector.ts';
 import { EMPTY_CUSTOMER_HISTORY } from '../risk/types.ts';
 import { getCustomerHistory } from '../payments/repository.ts';
 import type { RecoveryProvider } from '../payments/provider.ts';
-import { findCaseById, type RecoveryCase } from './repository.ts';
+import { findCaseById, updateCaseStatus, type RecoveryCase } from './repository.ts';
 import { findActionByIdempotencyKey } from './action-repository.ts';
 import {
   buildIdempotencyKey,
@@ -134,10 +134,19 @@ export async function executeRecoveryCase(
     { provider },
   );
 
+  // An executed action leaves the case awaiting verification: a request was
+  // sent, but whether revenue was recovered is not yet established. The case
+  // must NOT be marked RECOVERED here — only verified evidence can do that.
+  if (execution.executed && recoveryCase.status !== 'AWAITING_VERIFICATION') {
+    await updateCaseStatus(recoveryCase.id, 'AWAITING_VERIFICATION');
+  }
+
   return {
     execution,
     failure: null,
-    recoveryCase,
+    recoveryCase: execution.executed
+      ? { ...recoveryCase, status: 'AWAITING_VERIFICATION' }
+      : recoveryCase,
     policyDecision: policy.decision,
     idempotencyKey,
     message: execution.message,

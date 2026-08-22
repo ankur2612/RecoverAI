@@ -243,3 +243,30 @@ export async function getCustomerHistory(
     lifetimeValue: Number(row.lifetime_value ?? '0'),
   };
 }
+
+/**
+ * Refresh a payment's status from verified evidence.
+ *
+ * The ONLY sanctioned path from a recovery action to a mutated payment row,
+ * and it runs after verification, never after execution. Execution deliberately
+ * leaves payment state untouched, so a recovered payment reads stale locally
+ * until an observation confirms the outcome.
+ *
+ * Guarded to forward transitions only: a captured or refunded payment is
+ * terminal and is never rewritten by a later observation.
+ */
+export async function refreshPaymentStatusFromEvidence(
+  id: string,
+  status: PaymentStatus,
+  db: Queryable = getPool(),
+): Promise<Payment | null> {
+  const { rows } = await db.query<PaymentRow>(
+    `UPDATE payments
+     SET status = $2, updated_at = now()
+     WHERE id = $1
+       AND status NOT IN ('captured', 'refunded')
+     RETURNING ${PAYMENT_COLUMNS}`,
+    [id, status],
+  );
+  return rows.length === 0 ? null : rowToPayment(rows[0]!);
+}

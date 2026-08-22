@@ -5,7 +5,9 @@ import type {
   MinorUnits,
   PolicyDecision,
   RecoveryActionType,
+  VerificationStatus,
 } from '../shared/types.ts';
+import type { VerificationEvidence } from './verification-types.ts';
 
 type Queryable = Pick<pg.Pool | pg.PoolClient, 'query'>;
 
@@ -37,6 +39,13 @@ export interface RecoveryAction {
   createdAt: Date;
   executedAt: Date | null;
   completedAt: Date | null;
+  /** Null until verification has run. Never defaulted to a verdict. */
+  verificationStatus: VerificationStatus | null;
+  verificationReason: string | null;
+  verifiedAt: Date | null;
+  observedPaymentStatus: string | null;
+  verificationEvidence: VerificationEvidence[];
+  verificationAttempts: number;
 }
 
 interface ActionRow {
@@ -55,11 +64,19 @@ interface ActionRow {
   created_at: Date;
   executed_at: Date | null;
   completed_at: Date | null;
+  verification_status: string | null;
+  verification_reason: string | null;
+  verified_at: Date | null;
+  observed_payment_status: string | null;
+  verification_evidence: VerificationEvidence[];
+  verification_attempts: number;
 }
 
 const ACTION_COLUMNS = `id, recovery_case_id, action_type, policy_status, policy_reason,
   policy_version, execution_status, amount, idempotency_key, provider,
-  provider_reference, error_message, created_at, executed_at, completed_at`;
+  provider_reference, error_message, created_at, executed_at, completed_at,
+  verification_status, verification_reason, verified_at, observed_payment_status,
+  verification_evidence, verification_attempts`;
 
 function rowToAction(row: ActionRow): RecoveryAction {
   return {
@@ -78,6 +95,12 @@ function rowToAction(row: ActionRow): RecoveryAction {
     createdAt: row.created_at,
     executedAt: row.executed_at,
     completedAt: row.completed_at,
+    verificationStatus: row.verification_status as VerificationStatus | null,
+    verificationReason: row.verification_reason,
+    verifiedAt: row.verified_at,
+    observedPaymentStatus: row.observed_payment_status,
+    verificationEvidence: row.verification_evidence ?? [],
+    verificationAttempts: row.verification_attempts ?? 0,
   };
 }
 
@@ -230,4 +253,74 @@ export async function listActionsForCase(
     [recoveryCaseId],
   );
   return rows.map(rowToAction);
+}
+
+export interface RecordVerificationArgs {
+  id: string;
+  verificationStatus: VerificationStatus;
+  verificationReason: string;
+  observedPaymentStatus: string | null;
+  evidence: VerificationEvidence[];
+}
+
+/**
+ * Persist a verification verdict against an action.
+ *
+ * The WHERE clause enforces the no-regression rule in SQL rather than in
+ * application code: a terminal verdict (VERIFIED / NOT_RECOVERED) can only be
+ * re-affirmed, never changed. Only NULL or UNCONFIRMED is open to revision,
+ * which is exactly the resolution path an ambiguous execution needs.
+ *
+ * Returns null when the update was refused, so the caller can report the
+ * existing verdict rather than silently overwriting it.
+ */
+export async function recordVerification(
+  args: RecordVerificationArgs,
+  db: Queryable = getPool(),
+): Promise<RecoveryAction | null> {
+  const { rows } = await db.query<ActionRow>(
+    `UPDATE recovery_actions
+     SET verification_status = $2,
+         verification_reason = $3,
+         observed_payment_status = $4,
+         verification_evidence = $5::jsonb,
+         verified_at = now(),
+         verification_attempts = verification_attempts + 1
+     WHERE id = $1
+       AND (
+         verification_status IS NULL
+         OR verification_status = 'UNCONFIRMED'
+         OR verification_status = $2
+       )
+     RETURNING ${ACTION_COLUMNS}`,
+    [
+      args.id,
+      args.verificationStatus,
+      args.verificationReason,
+      args.observedPaymentStatus,
+      JSON.stringify(args.evidence),
+    ],
+  );
+  return rows.length === 0 ? null : rowToAction(rows[0]!);
+}
+
+/**
+ * The most recent completed action for a case.
+ *
+ * Verification targets a completed execution; PENDING/EXECUTING rows have no
+ * provider verdict to verify yet.
+ */
+export async function findLatestCompletedAction(
+  recoveryCaseId: string,
+  db: Queryable = getPool(),
+): Promise<RecoveryAction | null> {
+  const { rows } = await db.query<ActionRow>(
+    `SELECT ${ACTION_COLUMNS} FROM recovery_actions
+     WHERE recovery_case_id = $1
+       AND execution_status IN ('SUCCESS', 'FAILED', 'UNCONFIRMED')
+     ORDER BY completed_at DESC NULLS LAST, created_at DESC
+     LIMIT 1`,
+    [recoveryCaseId],
+  );
+  return rows.length === 0 ? null : rowToAction(rows[0]!);
 }

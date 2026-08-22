@@ -32,7 +32,8 @@ current state is **P0 items 1–4** (foundation). See
 | Recovery case persistence | Working |
 | **Deterministic policy engine (authorization)** | **Working** |
 | **Recovery executor + idempotency (execution)** | **Working** |
-| Outcome verification, Razorpay, dashboard | **Not built yet** |
+| **Outcome verification (evidence)** | **Working** |
+| Razorpay, approval workflow, dashboard | **Not built yet** |
 
 ---
 
@@ -95,7 +96,7 @@ curl http://localhost:8080/api/health
 ### Tests
 
 ```bash
-npm test            # 311 tests (integration tests skip without a database)
+npm test            # 374 tests (integration tests skip without a database)
 npm run typecheck
 npm run build
 ```
@@ -107,7 +108,7 @@ runnable on a machine with no PostgreSQL:
 
 ```bash
 RECOVERAI_TEST_DATABASE_URL=postgres://user:pass@host:port/db npm test
-# 372 tests (adds 61 live-database integration tests)
+# 466 tests (adds 92 live-database integration tests)
 ```
 
 ---
@@ -186,7 +187,8 @@ packages/backend/src/
 ├── policies/     engine.ts, types.ts, input.ts — AUTHORIZATION
 ├── payments/     repository, provider.ts, providers/mock.ts, factory.ts
 ├── risk/         detector.ts, types.ts — deterministic detection
-├── recovery/     analyze.ts, executor.ts, execute-service.ts,
+├── recovery/     analyze.ts, executor.ts, execute-service.ts, verifier.ts,
+│                 verify-service.ts, verification-types.ts,
 │                 repository.ts, action-repository.ts
 ├── audit/        append-only audit writes
 ├── analytics/    metrics + evaluation                   (empty — next phase)
@@ -293,6 +295,7 @@ landing entirely in dev by chance.
 | `POST /api/recovery/analyze` | Working — **analysis + authorization** |
 | `GET /api/recovery/cases` | Working |
 | `POST /api/recovery/:caseId/execute` | Working — **the only endpoint that acts** |
+| `POST /api/recovery/:caseId/verify` | Working — **establishes the outcome** |
 | `GET /api/recovery/:caseId/actions` | Working |
 | approval endpoints in PRD §25 | Not built yet |
 
@@ -539,6 +542,107 @@ simulating money movement.
 
 ---
 
+## Outcome verification
+
+The layer that closes the loop. It enforces the distinction the whole system
+rests on:
+
+> **"Execution happened" is not "revenue was recovered."**
+
+A provider saying *"retry accepted"* is an acknowledgement of our request. It is
+not evidence about the money. Verification establishes the business outcome
+independently, by observing the payment.
+
+```
+execution result ──► observe payment state ──► deterministic verifier ──► outcome
+                     (a READ; never re-executes)
+```
+
+`verifyOutcome()` is a **pure function** — no database, no network, no clock, no
+randomness, no LLM, no policy. Architectural tests assert it contains no
+`Date.now()`, no `await`, and no import of the executor or policy engine.
+
+### The rules
+
+| Execution | Observed payment | Outcome |
+| --- | --- | --- |
+| `SUCCESS` | `SUCCEEDED` | **VERIFIED** |
+| `SUCCESS` | `PENDING` | UNCONFIRMED |
+| `SUCCESS` | `FAILED` | NOT_RECOVERED |
+| `SUCCESS` | not observed | UNCONFIRMED |
+| `UNCONFIRMED` | `SUCCEEDED` | **VERIFIED** ← the UNKNOWN resolution path |
+| `UNCONFIRMED` | `PENDING` / `UNKNOWN` | UNCONFIRMED |
+| `FAILED` | *(not consulted)* | NOT_RECOVERED |
+| `PENDING` / `EXECUTING` / `SKIPPED_DUPLICATE` | — | UNCONFIRMED |
+
+**A provider SUCCESS alone never yields VERIFIED.** Without a corroborating
+observation the outcome stays unconfirmed. There is deliberately no
+"probably recovered" status.
+
+### Resolving UNKNOWN without retrying
+
+An execution that timed out is `UNCONFIRMED`: we do not know whether it took
+effect. Verification resolves it by **asking what the payment's state is now** —
+`getPaymentStatus()` is a read with no side effects. An ambiguous execution
+whose payment is observably complete *was* a recovery, established with **zero
+re-executions**.
+
+Verification answers *"what happened?"*. It never answers *"what should we do
+next?"* — that belongs to the policy and recovery layers.
+
+### Evidence, not a boolean
+
+Every verdict carries structured evidence, so a reviewer can reconstruct why an
+outcome was called recovered:
+
+| type | source | value |
+| --- | --- | --- |
+| `EXECUTION_RESULT` | `PROVIDER_EXECUTION` | `SUCCESS` |
+| `OBSERVED_PAYMENT_STATE` | `PROVIDER_PAYMENT_STATUS` | `SUCCEEDED` |
+| `STORED_PAYMENT_STATE` | `LOCAL_PAYMENT_RECORD` | `failed` |
+
+Evidence never contains credentials, authorization headers, or raw provider
+payloads — only the specific facts the verdict rests on.
+
+### The one path to "recovered"
+
+`RECOVERED` is reachable from exactly one place: a `VERIFIED` verdict. An
+architectural test asserts the executor never references the status, never
+writes a verification verdict, and never sets `verified: true`.
+
+The payment record is likewise only ever refreshed from verified evidence —
+one guarded caller, enforced by test. Execution deliberately leaves payment
+state untouched, which is why a genuinely recovered payment reads stale locally
+until verification confirms it.
+
+### Idempotency
+
+Repeating verification is safe. A terminal verdict short-circuits before any
+provider lookup, so a repeat performs **no provider I/O at all**, adds no
+evidence, and writes no duplicate audit events.
+
+`VERIFIED` and `NOT_RECOVERED` never regress — enforced in SQL, not application
+code. Only `UNCONFIRMED` stays open to revision, which is exactly the path an
+ambiguous execution needs.
+
+### Verified behaviour
+
+Real output from a live run:
+
+| Scenario | Policy | Execution | Verification | Recovered | Case |
+| --- | --- | --- | --- | --- | --- |
+| ₹2,499 | `ALLOWED` | `SUCCESS` | **VERIFIED** | ✅ | `RECOVERED` |
+| ₹25,000 | `REQUIRES_APPROVAL` | *refused* | *nothing to verify* | ❌ | `OPEN` |
+| timeout, payment settled | `ALLOWED` | `UNCONFIRMED` | **VERIFIED** | ✅ | `RECOVERED` |
+| timeout, still pending | `ALLOWED` | `UNCONFIRMED` | UNCONFIRMED | ❌ | `AWAITING_VERIFICATION` |
+| provider rejected | `ALLOWED` | `FAILED` | NOT_RECOVERED | ❌ | `FAILED` |
+
+Across that batch: **1 provider success, but 2 verified recoveries** — because
+one recovery came from an execution the provider never confirmed. Counting
+provider acknowledgements would have got both numbers wrong.
+
+---
+
 ## The AI safety boundary
 
 The single most important property in this codebase: **evaluation labels can
@@ -631,10 +735,12 @@ Built (P0 1–5, 9 partial):
 - [x] **Deterministic policy engine** — the authorization step
 - [x] **Recovery executor** — the execution step, with database-enforced
       idempotency and safe UNKNOWN handling
+- [x] **Outcome verification** — evidence-based business outcome, with the
+      UNKNOWN resolution path
 
-Next: **outcome verification** (turning a provider acknowledgement into
-evidence of recovered revenue), then Razorpay Test Mode integration, the
-approval workflow, dashboard, and batch metrics.
+Next: **Razorpay Test Mode integration** — the full abstraction is now proven
+end to end against the mock, so the real provider slots in behind it. Then the
+approval workflow, batch metrics, and the dashboard.
 
 Then (P1): failure simulation, manual approval workflow, held-out evaluation
 with precision/recall/F1 scored against `payment_ground_truth`.
@@ -674,16 +780,17 @@ Stated plainly, because the PRD asks for honest reporting:
    deployment fails loudly instead of producing plausible fake diagnoses.
    MockAI is a transparent rule-based diagnoser, not a simulated LLM, and its
    accuracy figures say nothing about how a real model would perform.
-2. **No outcome verification.** A provider `SUCCESS` is recorded as
-   "the request was accepted", never as recovered revenue. `verified` is
-   hardcoded `false`, and no metric counts recovered money yet.
-3. **Only `RETRY` is executable.** `REMINDER`, `CHECKOUT_RECOVERY`, and
+2. **Verification is explicit, not automatic.** Nothing verifies an outcome on
+   its own: `POST /api/recovery/:caseId/verify` must be called. An action can
+   therefore sit `AWAITING_VERIFICATION` indefinitely. A background worker is
+   the natural next step but was deliberately not built here.
+3. **The observed payment state comes from the mock provider.** The rules and
+   the evidence model are real; the observations are simulated until Razorpay
+   Test Mode lands.
+4. **Only `RETRY` is executable.** `REMINDER`, `CHECKOUT_RECOVERY`, and
    `SUBSCRIPTION_RETRY` are authorized by policy but no provider can perform
    them, so the executor refuses them as `UNSUPPORTED_ACTION` rather than
    pretending to act.
-4. **`UNCONFIRMED` actions have no resolution path.** They are persisted, never
-   retried, and block further action on the payment — but nothing yet queries
-   provider state to resolve them. That is manual for now.
 5. **The idempotency key includes the policy version.** Bumping the version
    permits one further execution of a case that already executed under the old
    rules. That is a deliberate trade-off (a different rule set is arguably a
@@ -691,25 +798,28 @@ Stated plainly, because the PRD asks for honest reporting:
    approval flow lands.
 6. **No Razorpay integration.** `PAYMENT_PROVIDER=razorpay` throws rather than
    falling back to the mock. No real money can move.
-7. **No accuracy metrics are computed yet.** `payment_ground_truth` is
+7. **Batch metrics are computable but not exposed.** The persisted state
+   distinguishes executions, verified recoveries, non-recoveries, and unresolved
+   outcomes, but no endpoint or dashboard aggregates them yet.
+8. **No accuracy metrics are computed yet.** `payment_ground_truth` is
    populated by the seeder and structurally walled off from the AI, but nothing
    scores predictions against it. No precision/recall/F1 exists — reporting any
    would be fabrication.
-8. **`recoveryProbability` in the dataset is a simulation parameter**, not a
+9. **`recoveryProbability` in the dataset is a simulation parameter**, not a
    measured quantity. It defines what a future simulated executor will do; it is
    not evidence of real-world recoverability.
-9. **The `attempt_count` on an ingested payment is client-supplied.** Until the
+10. **The `attempt_count` on an ingested payment is client-supplied.** Until the
    executor exists there is no server-side retry ledger to reconcile it against,
    so a caller could understate prior attempts. The retry ceiling is enforced
    against the value stored.
-10. **Docker is not installed in the development environment used so far**, so
+11. **Docker is not installed in the development environment used so far**, so
    `docker compose up -d db` and the container build are still unexercised. The
    schema was verified against a locally-installed PostgreSQL 16.14 instead.
-11. **`npm test` and `npm run build` may fail on Windows** if `node` is not on
+12. **`npm test` and `npm run build` may fail on Windows** if `node` is not on
    the PATH that npm hands to `cmd.exe`, even when it is available in your
    shell. Running `node --experimental-strip-types --test "tests/**/*.test.ts"`
    directly works regardless.
-12. **No authentication.** Every endpoint is unauthenticated. Acceptable while
+13. **No authentication.** Every endpoint is unauthenticated. Acceptable while
    nothing can move money; it must be addressed before the executor lands.
 
 ---
