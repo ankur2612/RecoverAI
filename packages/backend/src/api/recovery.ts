@@ -15,6 +15,7 @@ import { executeRecoveryCase } from '../recovery/execute-service.ts';
 import { createRecoveryProvider } from '../payments/factory.ts';
 import type { RecoveryProvider } from '../payments/provider.ts';
 import { listActionsForCase, type RecoveryAction } from '../recovery/action-repository.ts';
+import { verifyRecoveryCase } from '../recovery/verify-service.ts';
 
 function serialiseCase(recoveryCase: RecoveryCase) {
   return {
@@ -53,6 +54,11 @@ function serialiseAction(action: RecoveryAction) {
     provider: action.provider,
     provider_reference: action.providerReference,
     error_message: action.errorMessage,
+    verification_status: action.verificationStatus,
+    verification_reason: action.verificationReason,
+    verified_at: action.verifiedAt === null ? null : action.verifiedAt.toISOString(),
+    observed_payment_status: action.observedPaymentStatus,
+    verification_attempts: action.verificationAttempts,
     created_at: action.createdAt.toISOString(),
     executed_at: action.executedAt === null ? null : action.executedAt.toISOString(),
     completed_at: action.completedAt === null ? null : action.completedAt.toISOString(),
@@ -231,6 +237,62 @@ export async function registerRecoveryRoutes(
         provider: execution.provider,
         action: execution.action === null ? null : serialiseAction(execution.action),
         message: execution.message,
+      });
+    },
+  );
+
+  /**
+   * POST /api/recovery/:caseId/verify
+   *
+   * Establishes the BUSINESS OUTCOME from evidence.
+   *
+   * This is the endpoint that answers "was the revenue actually recovered?".
+   * It reads provider and payment state; it never executes, never retries —
+   * not even an ambiguous action — and never consults the AI or policy layers.
+   */
+  app.post<{ Params: { caseId: string } }>(
+    '/api/recovery/:caseId/verify',
+    async (request, reply) => {
+      const { caseId } = request.params;
+      if (typeof caseId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(caseId)) {
+        return reply.code(400).send({
+          error: 'validation_error',
+          message: 'The recovery case id is invalid.',
+        });
+      }
+
+      const result = await verifyRecoveryCase(caseId, { provider: recoveryProvider });
+
+      if (result.failure !== null) {
+        // Nothing executed is a conflict, not a missing resource: the case
+        // exists but has no outcome to establish.
+        const status = result.failure === 'NO_EXECUTION_TO_VERIFY' ? 409 : 404;
+        return reply.code(status).send({
+          error: result.failure.toLowerCase(),
+          message: result.message,
+        });
+      }
+
+      const verification = result.verification!;
+
+      return reply.code(200).send({
+        case_id: caseId,
+        verification_status: verification.status,
+        // The single fact that matters, and the only place it is asserted.
+        recovered: verification.recovered,
+        reason: verification.reason,
+        verified_at: verification.verifiedAt,
+        already_verified: result.alreadyVerified,
+        evidence: verification.evidence.map((item) => ({
+          type: item.type,
+          source: item.source,
+          value: item.value,
+          reference: item.reference,
+          observed_at: item.observedAt,
+          detail: item.detail,
+        })),
+        case_status: result.recoveryCase?.status ?? null,
+        action: result.action === null ? null : serialiseAction(result.action),
       });
     },
   );
