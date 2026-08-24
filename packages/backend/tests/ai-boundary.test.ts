@@ -348,13 +348,41 @@ describe('AI boundary — architectural dependency direction', () => {
     }
   });
 
-  test('no AI module performs network calls of its own', () => {
+  test('an AI module may only reach its OWN model endpoint', () => {
+    // An LLM provider must call its model, so a blanket no-network rule is no
+    // longer the right guard. What must stay true is narrower and more
+    // important: no AI module may reach a payment API, a database, or any
+    // host other than its own vendor's.
+    const MODEL_HOSTS = [
+      'generativelanguage.googleapis.com', // Gemini
+      'api.anthropic.com',
+      'api.openai.com',
+    ];
+
     for (const file of agentFiles) {
       const source = readFileSync(file, 'utf8');
-      // MockAI must make no outbound call at all; a future LLM provider will
-      // call its own model endpoint and this test will need scoping to it.
-      assert.ok(!/\bfetch\(/.test(source), `${relative(SRC, file)} calls fetch()`);
-      assert.ok(!/node:http/.test(source), `${relative(SRC, file)} imports node:http`);
+      const rel = relative(SRC, file).replace(/\\/g, '/');
+      const isVendorProvider = /providers\/(gemini|claude|openai)\.ts$/.test(rel);
+
+      if (!isVendorProvider) {
+        // Everything else in the AI layer — the input builder, the validator,
+        // the factory, MockAI — must make no outbound call at all.
+        assert.ok(!/\bfetch\(/.test(source), `${rel} calls fetch()`);
+        assert.ok(!/node:http/.test(source), `${rel} imports node:http`);
+        continue;
+      }
+
+      // A vendor provider may call out, but only to its own model host.
+      const urls = [...source.matchAll(/https?:\/\/([A-Za-z0-9.-]+)/g)].map((m) => m[1]!);
+      for (const host of urls) {
+        assert.ok(
+          MODEL_HOSTS.includes(host),
+          `${rel} contacts "${host}", which is not a model endpoint`,
+        );
+      }
+      // And never a payment API, whatever the transport.
+      assert.ok(!/razorpay/i.test(source), `${rel} references Razorpay`);
+      assert.ok(!/\/payments\//.test(source), `${rel} references a payments endpoint`);
     }
   });
 

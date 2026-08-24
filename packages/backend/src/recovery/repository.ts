@@ -196,3 +196,24 @@ export async function listRecoveryCases(
 
   return { cases: rows.map(rowToCase), total: Number(countResult.rows[0]?.count ?? '0') };
 }
+
+/**
+ * Move a recovery case to a new lifecycle status.
+ *
+ * Used by verification to reflect the established outcome. RECOVERED is set
+ * here ONLY when verification produced VERIFIED evidence — never from a
+ * provider acknowledgement and never from AI confidence.
+ */
+export async function updateCaseStatus(
+  id: string,
+  status: RecoveryCaseStatus,
+  db: Queryable = getPool(),
+): Promise<RecoveryCase | null> {
+  const { rows } = await db.query<RecoveryCaseRow>(
+    `UPDATE recovery_cases SET status = $2, updated_at = now()
+     WHERE id = $1
+     RETURNING ${CASE_COLUMNS}`,
+    [id, status],
+  );
+  return rows.length === 0 ? null : rowToCase(rows[0]!);
+}

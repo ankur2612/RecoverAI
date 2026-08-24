@@ -10,6 +10,7 @@ import {
   POLICY_DECISIONS,
   RECOVERY_ACTIONS,
   RECOVERY_CASE_STATUSES,
+  VERIFICATION_STATUSES,
 } from '../src/shared/types.ts';
 
 /**
@@ -78,11 +79,23 @@ describe('migrations — required tables', () => {
 });
 
 describe('migrations — enum parity with TypeScript', () => {
-  /** Extract the quoted values of the named CHECK constraint. */
+  /**
+   * Extract the quoted values of the named CHECK constraint.
+   *
+   * A later migration may redefine a constraint (002 added EXECUTING to the
+   * execution check, 003 added AWAITING_VERIFICATION to the case check), so
+   * parity must be checked against the LAST definition in migration order,
+   * never the first.
+   */
   function checkValues(constraint: string): string[] {
-    const match = sql.match(new RegExp(`CONSTRAINT ${constraint}[\\s\\S]*?\\(([\\s\\S]*?)\\)\\s*\\n`));
-    assert.ok(match, `constraint ${constraint} not found`);
-    return [...match[1]!.matchAll(/'([A-Za-z_]+)'/g)].map((m) => m[1]!).sort();
+    const matches = [
+      ...sql.matchAll(
+        new RegExp(`CONSTRAINT ${constraint}[\\s\\S]*?\\(([\\s\\S]*?)\\)\\s*\\n`, 'g'),
+      ),
+    ];
+    assert.ok(matches.length > 0, `constraint ${constraint} not found`);
+    const latest = matches.at(-1)![1]!;
+    return [...latest.matchAll(/'([A-Za-z_]+)'/g)].map((m) => m[1]!).sort();
   }
 
   test('payment status constraint matches PAYMENT_STATUSES', () => {
@@ -115,6 +128,13 @@ describe('migrations — enum parity with TypeScript', () => {
     assert.deepEqual(values, [...EXECUTION_STATUSES].sort());
   });
 
+  test('verification status constraint matches VERIFICATION_STATUSES', () => {
+    assert.deepEqual(
+      checkValues('recovery_actions_verification_check'),
+      [...VERIFICATION_STATUSES].sort(),
+    );
+  });
+
   test('case status constraint matches RECOVERY_CASE_STATUSES', () => {
     assert.deepEqual(checkValues('recovery_cases_status_check'), [...RECOVERY_CASE_STATUSES].sort());
   });
@@ -145,7 +165,20 @@ describe('migrations — safety constraints', () => {
 
   test('only one live recovery case per payment', () => {
     assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS recovery_cases_one_open_per_payment/);
-    assert.match(sql, /WHERE status IN \('OPEN', 'AWAITING_APPROVAL', 'EXECUTING'\)/);
+
+    // Check the LATEST definition: 003 redefines the index to include
+    // AWAITING_VERIFICATION, since an executed-but-unverified case still has
+    // an action outstanding and must block a competing case.
+    const definitions = [
+      ...sql.matchAll(
+        /CREATE UNIQUE INDEX IF NOT EXISTS recovery_cases_one_open_per_payment[\s\S]*?WHERE status IN \(([^)]*)\)/g,
+      ),
+    ];
+    const latest = definitions.at(-1)![1]!;
+    const statuses = [...latest.matchAll(/'([A-Z_]+)'/g)].map((m) => m[1]!).sort();
+    assert.deepEqual(statuses, [
+      'AWAITING_APPROVAL', 'AWAITING_VERIFICATION', 'EXECUTING', 'OPEN',
+    ]);
   });
 
   test('confidence and score columns are bounded to [0, 1]', () => {

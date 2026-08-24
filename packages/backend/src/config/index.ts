@@ -9,7 +9,9 @@
  *      leaves the process.
  */
 
-export type AiProviderName = 'mock' | 'claude' | 'openai';
+import { DEFAULT_GEMINI_MODEL } from '../agents/diagnosis/providers/gemini.ts';
+
+export type AiProviderName = 'mock' | 'claude' | 'openai' | 'gemini';
 export type PaymentProviderName = 'mock' | 'razorpay';
 
 export interface PolicyConfig {
@@ -49,6 +51,8 @@ export interface AppConfig {
     claudeModel: string;
     openaiApiKey: string | undefined;
     openaiModel: string | undefined;
+    geminiApiKey: string | undefined;
+    geminiModel: string;
   };
   payments: {
     provider: PaymentProviderName;
@@ -115,11 +119,17 @@ function readEnum<T extends string>(env: Env, key: string, allowed: readonly T[]
 }
 
 export function loadConfig(env: Env = process.env): AppConfig {
-  const aiProvider = readEnum(env, 'AI_PROVIDER', ['mock', 'claude', 'openai'] as const, 'mock');
+  const aiProvider = readEnum(
+    env,
+    'AI_PROVIDER',
+    ['mock', 'claude', 'openai', 'gemini'] as const,
+    'mock',
+  );
   const paymentProvider = readEnum(env, 'PAYMENT_PROVIDER', ['mock', 'razorpay'] as const, 'mock');
 
   const anthropicApiKey = readOptional(env, 'ANTHROPIC_API_KEY');
   const openaiApiKey = readOptional(env, 'OPENAI_API_KEY');
+  const geminiApiKey = readOptional(env, 'GEMINI_API_KEY');
   const razorpayKeyId = readOptional(env, 'RAZORPAY_KEY_ID');
   const razorpayKeySecret = readOptional(env, 'RAZORPAY_KEY_SECRET');
 
@@ -130,17 +140,38 @@ export function loadConfig(env: Env = process.env): AppConfig {
   if (aiProvider === 'openai' && openaiApiKey === undefined) {
     throw new ConfigError('AI_PROVIDER=openai requires OPENAI_API_KEY to be set');
   }
+  // Fail loudly rather than silently serving MockAI. A deployment must never
+  // appear to be using a real model while returning deterministic stubs.
+  if (aiProvider === 'gemini' && geminiApiKey === undefined) {
+    throw new ConfigError(
+      'AI_PROVIDER=gemini requires GEMINI_API_KEY to be set. RecoverAI will not fall back ' +
+        'to the mock provider: a deployment must never appear to use a real model while ' +
+        'serving deterministic stubs.',
+    );
+  }
   if (paymentProvider === 'razorpay' && (!razorpayKeyId || !razorpayKeySecret)) {
     throw new ConfigError(
       'PAYMENT_PROVIDER=razorpay requires RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET (test mode)',
     );
   }
-  // Guard against a live key reaching a system that moves money.
-  if (razorpayKeyId !== undefined && !razorpayKeyId.startsWith('rzp_test_')) {
-    throw new ConfigError(
-      'RAZORPAY_KEY_ID must be a Test Mode key (expected prefix "rzp_test_"). ' +
-        'RecoverAI refuses to start with live credentials.',
-    );
+  // Guard against a live key reaching a system that moves money. Checked
+  // whenever a key is present at all, not only when razorpay is selected: a
+  // live credential sitting in the environment is itself the hazard.
+  if (razorpayKeyId !== undefined) {
+    if (razorpayKeyId.startsWith('rzp_live_')) {
+      throw new ConfigError(
+        'RAZORPAY_KEY_ID is a LIVE Mode key. RecoverAI refuses to start with live ' +
+          'credentials: this system must never be pointed at real money.',
+      );
+    }
+    // Fail closed on anything that is not recognisably a test key, rather than
+    // only rejecting the known-live prefix.
+    if (!/^rzp_test_[A-Za-z0-9]+$/.test(razorpayKeyId)) {
+      throw new ConfigError(
+        'RAZORPAY_KEY_ID must be a Test Mode key of the form "rzp_test_<alphanumeric>". ' +
+          'RecoverAI fails closed on any unrecognised credential format.',
+      );
+    }
   }
 
   const policy: PolicyConfig = {
@@ -176,6 +207,8 @@ export function loadConfig(env: Env = process.env): AppConfig {
       claudeModel: readString(env, 'CLAUDE_MODEL', 'claude-sonnet-5'),
       openaiApiKey,
       openaiModel: readOptional(env, 'OPENAI_MODEL'),
+      geminiApiKey,
+      geminiModel: readString(env, 'GEMINI_MODEL', DEFAULT_GEMINI_MODEL),
     },
     payments: {
       provider: paymentProvider,
@@ -202,11 +235,17 @@ export function redactedConfig(config: AppConfig) {
     databaseConfigured: config.databaseUrl.length > 0,
     ai: {
       provider: config.ai.provider,
-      model: config.ai.provider === 'claude' ? config.ai.claudeModel : config.ai.openaiModel,
+      model:
+        config.ai.provider === 'claude'
+          ? config.ai.claudeModel
+          : config.ai.provider === 'gemini'
+            ? config.ai.geminiModel
+            : config.ai.openaiModel,
       credentialPresent:
         config.ai.provider === 'mock' ||
         (config.ai.provider === 'claude' && config.ai.anthropicApiKey !== undefined) ||
-        (config.ai.provider === 'openai' && config.ai.openaiApiKey !== undefined),
+        (config.ai.provider === 'openai' && config.ai.openaiApiKey !== undefined) ||
+        (config.ai.provider === 'gemini' && config.ai.geminiApiKey !== undefined),
     },
     payments: {
       provider: config.payments.provider,

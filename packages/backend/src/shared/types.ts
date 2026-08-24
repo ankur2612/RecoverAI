@@ -97,16 +97,38 @@ export const EXECUTION_STATUSES = [
 ] as const;
 export type ExecutionStatus = (typeof EXECUTION_STATUSES)[number];
 
+/**
+ * Recovery case lifecycle.
+ *
+ * AWAITING_VERIFICATION sits between "we acted" and "we know what happened".
+ * RECOVERED is set ONLY by verified evidence — never by a provider
+ * acknowledgement, and never by AI confidence.
+ */
 export const RECOVERY_CASE_STATUSES = [
   'OPEN',
   'AWAITING_APPROVAL',
   'EXECUTING',
+  'AWAITING_VERIFICATION',
   'RECOVERED',
   'FAILED',
   'ESCALATED',
   'CLOSED',
 ] as const;
 export type RecoveryCaseStatus = (typeof RECOVERY_CASE_STATUSES)[number];
+
+/**
+ * The business outcome, established by evidence rather than by a provider's
+ * word.
+ *
+ *   VERIFIED       evidence confirms the intended outcome occurred
+ *   NOT_RECOVERED  evidence confirms it did NOT occur
+ *   UNCONFIRMED    evidence is insufficient — the fail-closed default
+ *
+ * There is deliberately no "PROBABLY_RECOVERED". An outcome is either
+ * evidenced or it is unconfirmed.
+ */
+export const VERIFICATION_STATUSES = ['VERIFIED', 'NOT_RECOVERED', 'UNCONFIRMED'] as const;
+export type VerificationStatus = (typeof VERIFICATION_STATUSES)[number];
 
 export interface Merchant {
   id: string;

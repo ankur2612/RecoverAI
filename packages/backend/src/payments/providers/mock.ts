@@ -1,6 +1,8 @@
 import type {
+  ObservedPaymentState,
   ProviderActionRequest,
   ProviderOutcome,
+  ProviderPaymentStatus,
   ProviderResult,
   RecoveryProvider,
 } from '../provider.ts';
@@ -25,6 +27,17 @@ export interface MockProviderOptions {
   throwOnCall?: boolean;
   /** Artificial delay in ms, used to widen the window in concurrency tests. */
   delayMs?: number;
+  /**
+   * The payment state getPaymentStatus() reports, independent of the execution
+   * outcome. Kept separate on purpose: a provider can accept a request and the
+   * payment still end up PENDING or FAILED, which is exactly the ambiguity the
+   * verification layer exists to handle.
+   */
+  observedState?: ObservedPaymentState;
+  /** Per-payment overrides, so one test can hold several payments at once. */
+  observedStateByPayment?: Record<string, ObservedPaymentState>;
+  /** Make the status lookup itself fail, exercising the fail-closed path. */
+  throwOnStatusLookup?: boolean;
 }
 
 export class MockRecoveryProvider implements RecoveryProvider {
@@ -34,15 +47,24 @@ export class MockRecoveryProvider implements RecoveryProvider {
   #queue: ProviderOutcome[];
   #throwOnCall: boolean;
   #delayMs: number;
+  #observedState: ObservedPaymentState;
+  #observedByPayment: Record<string, ObservedPaymentState>;
+  #throwOnStatusLookup: boolean;
 
   /** Every request received, in order. Tests assert on length and content. */
   readonly calls: ProviderActionRequest[] = [];
+
+  /** Every payment id whose status was looked up, in order. */
+  readonly statusLookups: string[] = [];
 
   constructor(options: MockProviderOptions = {}) {
     this.#defaultOutcome = options.defaultOutcome ?? 'SUCCESS';
     this.#queue = [...(options.outcomeQueue ?? [])];
     this.#throwOnCall = options.throwOnCall ?? false;
     this.#delayMs = options.delayMs ?? 0;
+    this.#observedState = options.observedState ?? 'SUCCEEDED';
+    this.#observedByPayment = { ...(options.observedStateByPayment ?? {}) };
+    this.#throwOnStatusLookup = options.throwOnStatusLookup ?? false;
   }
 
   /** Number of times the provider was actually invoked. */
@@ -50,14 +72,61 @@ export class MockRecoveryProvider implements RecoveryProvider {
     return this.calls.length;
   }
 
+  /** Number of status lookups. Proves verification did not re-execute. */
+  get statusLookupCount(): number {
+    return this.statusLookups.length;
+  }
+
   /** Change the outcome of the next call, for multi-step tests. */
   setNextResult(outcome: ProviderOutcome): void {
     this.#queue.push(outcome);
   }
 
+  /** Change the observed payment state, e.g. to simulate a pending settling. */
+  setObservedState(state: ObservedPaymentState, paymentId?: string): void {
+    if (paymentId === undefined) this.#observedState = state;
+    else this.#observedByPayment[paymentId] = state;
+  }
+
   reset(): void {
     this.calls.length = 0;
+    this.statusLookups.length = 0;
     this.#queue = [];
+  }
+
+  /**
+   * Observe a payment's current state.
+   *
+   * A pure read: it never executes an action, never mutates provider state,
+   * and is safe to call repeatedly. That is what makes verification idempotent
+   * and what allows an UNCONFIRMED execution to be resolved without retrying.
+   */
+  async getPaymentStatus(paymentId: string): Promise<ProviderPaymentStatus> {
+    this.statusLookups.push(paymentId);
+
+    if (this.#delayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, this.#delayMs));
+    }
+
+    if (this.#throwOnStatusLookup) {
+      // The lookup failed, so we know nothing. Reporting UNKNOWN rather than
+      // throwing keeps the verifier's fail-closed path simple and explicit.
+      return {
+        state: 'UNKNOWN',
+        rawStatus: null,
+        reference: null,
+        errorMessage: 'mock provider: status lookup failed',
+      };
+    }
+
+    const state = this.#observedByPayment[paymentId] ?? this.#observedState;
+
+    return {
+      state,
+      rawStatus: MOCK_RAW_STATUS[state],
+      reference: `mockstatus_${paymentId}`,
+      errorMessage: null,
+    };
   }
 
   async executeAction(request: ProviderActionRequest): Promise<ProviderResult> {
@@ -112,3 +181,11 @@ export class MockRecoveryProvider implements RecoveryProvider {
     }
   }
 }
+
+/** Provider-native status strings, recorded as evidence. Never a secret. */
+const MOCK_RAW_STATUS: Readonly<Record<ObservedPaymentState, string | null>> = Object.freeze({
+  SUCCEEDED: 'captured',
+  PENDING: 'authorized',
+  FAILED: 'failed',
+  UNKNOWN: null,
+});

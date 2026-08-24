@@ -58,16 +58,50 @@ export interface ProviderResult {
 }
 
 /**
+ * The payment state a provider can observe, independent of what it said about
+ * our request.
+ *
+ *   SUCCEEDED  the payment completed
+ *   PENDING    still in flight; no conclusion is available yet
+ *   FAILED     the payment definitively did not complete
+ *   UNKNOWN    the provider cannot tell us (lookup failed, unrecognised state)
+ *
+ * UNKNOWN is distinct from PENDING: PENDING means "not yet", UNKNOWN means
+ * "we could not find out". Both fail closed, but they are different facts and
+ * an operator needs to tell them apart.
+ */
+export const OBSERVED_PAYMENT_STATES = ['SUCCEEDED', 'PENDING', 'FAILED', 'UNKNOWN'] as const;
+export type ObservedPaymentState = (typeof OBSERVED_PAYMENT_STATES)[number];
+
+/** What the provider observed when asked about a payment's current state. */
+export interface ProviderPaymentStatus {
+  state: ObservedPaymentState;
+  /** The provider's own status string, for the audit trail. Never a secret. */
+  rawStatus: string | null;
+  /** Opaque reference for reconciliation. */
+  reference: string | null;
+  /** Present when the lookup itself failed. */
+  errorMessage: string | null;
+}
+
+/**
  * The provider contract.
  *
  * `executeAction` may throw. A throw is treated by the executor as UNKNOWN
  * rather than FAILED, because a thrown exception (a socket error, an aborted
  * request) does not prove the remote side did nothing.
+ *
+ * `getPaymentStatus` is a READ. It is what lets an UNCONFIRMED execution be
+ * resolved without re-executing anything: verification asks "what happened?",
+ * never "do it again". A provider that cannot answer must report UNKNOWN
+ * rather than guessing.
  */
 export interface RecoveryProvider {
   /** Stable identifier recorded on the action and in the audit trail. */
   readonly name: string;
   executeAction(request: ProviderActionRequest): Promise<ProviderResult>;
+  /** Observe a payment's current state. Must have no side effects. */
+  getPaymentStatus(paymentId: string): Promise<ProviderPaymentStatus>;
 }
 
 /** Actions a provider can actually perform today. */
