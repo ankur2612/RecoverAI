@@ -17,6 +17,7 @@ import type { ObservedPaymentState } from '../src/payments/provider.ts';
 
 /**
  * Outcome verification against REAL PostgreSQL.
+ *
  * Skips when RECOVERAI_TEST_DATABASE_URL is unset.
  */
 const TEST_DB_URL = process.env.RECOVERAI_TEST_DATABASE_URL;
@@ -57,7 +58,10 @@ async function executeThenVerify(
   executionOutcome: 'SUCCESS' | 'FAILED' | 'UNKNOWN',
   observedState: ObservedPaymentState,
 ) {
-  const provider = new MockRecoveryProvider({ defaultOutcome: executionOutcome, observedState });
+  const provider = new MockRecoveryProvider({
+    defaultOutcome: executionOutcome,
+    observedState,
+  });
   const execution = await executeRecoveryCase(caseId, { provider, config: CONFIG });
   const verification = await verifyRecoveryCase(caseId, { provider });
   return { provider, execution, verification };
@@ -95,6 +99,7 @@ describe('outcome verification — live database', { skip }, () => {
     await cleanFixtures();
   });
 
+  // -- migration -----------------------------------------------------------
   describe('migration', () => {
     test('re-running migrations is a no-op', async () => {
       assert.deepEqual(await runMigrations(), []);
@@ -102,7 +107,8 @@ describe('outcome verification — live database', { skip }, () => {
 
     test('verification columns exist', async () => {
       const { rows } = await getPool().query<{ column_name: string }>(
-        `SELECT column_name FROM information_schema.columns WHERE table_name = 'recovery_actions'`,
+        `SELECT column_name FROM information_schema.columns
+         WHERE table_name = 'recovery_actions'`,
       );
       const cols = rows.map((r) => r.column_name);
       for (const expected of [
@@ -135,6 +141,7 @@ describe('outcome verification — live database', { skip }, () => {
     });
   });
 
+  // -- the core distinction -------------------------------------------------
   describe('execution is not outcome', () => {
     test('execution SUCCESS + payment SUCCEEDED -> VERIFIED', async () => {
       await seedCase('rc_vr_ok', 'pay_vr_ok');
@@ -142,6 +149,7 @@ describe('outcome verification — live database', { skip }, () => {
 
       assert.equal(verification.verification!.status, 'VERIFIED');
       assert.equal(verification.verification!.recovered, true);
+      // Verification observed rather than acted.
       assert.equal(provider.callCount, 1, 'exactly one execution');
       assert.equal(provider.statusLookupCount, 1, 'exactly one observation');
 
@@ -159,15 +167,20 @@ describe('outcome verification — live database', { skip }, () => {
       assert.equal(verification.verification!.recovered, false);
 
       // The critical assertion: a provider SUCCESS did NOT become recovery.
-      assert.equal((await findPaymentById('pay_vr_pending'))!.status, 'failed');
-      assert.notEqual((await findCaseById('rc_vr_pending'))!.status, 'RECOVERED');
+      const payment = await findPaymentById('pay_vr_pending');
+      assert.equal(payment!.status, 'failed', 'payment must not be marked captured');
+      const recoveryCase = await findCaseById('rc_vr_pending');
+      assert.notEqual(recoveryCase!.status, 'RECOVERED');
     });
 
     test('execution SUCCESS + payment FAILED -> NOT_RECOVERED', async () => {
       await seedCase('rc_vr_sf', 'pay_vr_sf');
       const { verification } = await executeThenVerify('rc_vr_sf', 'SUCCESS', 'FAILED');
+
       assert.equal(verification.verification!.status, 'NOT_RECOVERED');
-      assert.equal((await findCaseById('rc_vr_sf'))!.status, 'FAILED');
+      assert.equal(verification.verification!.recovered, false);
+      const recoveryCase = await findCaseById('rc_vr_sf');
+      assert.equal(recoveryCase!.status, 'FAILED');
     });
 
     test('a case is AWAITING_VERIFICATION between execution and verification', async () => {
@@ -181,6 +194,7 @@ describe('outcome verification — live database', { skip }, () => {
     });
   });
 
+  // -- UNKNOWN resolution ---------------------------------------------------
   describe('UNKNOWN resolution', () => {
     test('UNCONFIRMED execution + payment SUCCEEDED resolves to VERIFIED', async () => {
       await seedCase('rc_vr_unkok', 'pay_vr_unkok');
@@ -188,9 +202,10 @@ describe('outcome verification — live database', { skip }, () => {
         'rc_vr_unkok', 'UNKNOWN', 'SUCCEEDED',
       );
 
-      assert.equal((await listActionsForCase('rc_vr_unkok'))[0]!.executionStatus, 'UNCONFIRMED');
+      const actions = await listActionsForCase('rc_vr_unkok');
+      assert.equal(actions[0]!.executionStatus, 'UNCONFIRMED', 'execution stays unconfirmed');
       assert.equal(verification.verification!.status, 'VERIFIED');
-      // Resolved WITHOUT re-executing.
+      // Resolved WITHOUT re-executing: one execution, one observation.
       assert.equal(provider.callCount, 1, 'verification must not re-execute');
       assert.equal(provider.statusLookupCount, 1);
     });
@@ -200,9 +215,11 @@ describe('outcome verification — live database', { skip }, () => {
       const { verification, provider } = await executeThenVerify(
         'rc_vr_unkpend', 'UNKNOWN', 'PENDING',
       );
+
       assert.equal(verification.verification!.status, 'UNCONFIRMED');
       assert.equal(provider.callCount, 1, 'an ambiguous outcome must not trigger a retry');
-      assert.equal((await findCaseById('rc_vr_unkpend'))!.status, 'AWAITING_VERIFICATION');
+      const recoveryCase = await findCaseById('rc_vr_unkpend');
+      assert.equal(recoveryCase!.status, 'AWAITING_VERIFICATION');
     });
 
     test('an unresolvable payment stays UNCONFIRMED and can be revisited', async () => {
@@ -211,7 +228,9 @@ describe('outcome verification — live database', { skip }, () => {
         defaultOutcome: 'UNKNOWN', observedState: 'PENDING',
       });
       await executeRecoveryCase('rc_vr_revisit', { provider, config: CONFIG });
-      assert.equal((await verifyRecoveryCase('rc_vr_revisit', { provider })).verification!.status, 'UNCONFIRMED');
+
+      const first = await verifyRecoveryCase('rc_vr_revisit', { provider });
+      assert.equal(first.verification!.status, 'UNCONFIRMED');
 
       // The payment settles later; a second verification resolves it.
       provider.setObservedState('SUCCEEDED');
@@ -225,28 +244,34 @@ describe('outcome verification — live database', { skip }, () => {
     });
   });
 
+  // -- failed execution -----------------------------------------------------
   describe('failed execution', () => {
     test('a FAILED execution is NOT_RECOVERED and never claims recovery', async () => {
       await seedCase('rc_vr_fail', 'pay_vr_fail');
-      // Even with the payment observably succeeded, a rejected request is not
-      // a recovery BY THIS ACTION.
       const { verification, provider } = await executeThenVerify(
+        // Even with the payment observably succeeded, a rejected request is
+        // not a recovery BY THIS ACTION.
         'rc_vr_fail', 'FAILED', 'SUCCEEDED',
       );
 
       assert.equal(verification.verification!.status, 'NOT_RECOVERED');
       assert.equal(verification.verification!.recovered, false);
+      // A conclusive failure needs no observation.
       assert.equal(provider.statusLookupCount, 0, 'no pointless lookup for a failed execution');
-      assert.equal((await findPaymentById('pay_vr_fail'))!.status, 'failed');
+
+      const payment = await findPaymentById('pay_vr_fail');
+      assert.equal(payment!.status, 'failed');
     });
   });
 
+  // -- persistence ----------------------------------------------------------
   describe('persistence', () => {
     test('evidence persists as structured JSON', async () => {
       await seedCase('rc_vr_ev', 'pay_vr_ev');
       await executeThenVerify('rc_vr_ev', 'SUCCESS', 'SUCCEEDED');
 
-      const evidence = (await listActionsForCase('rc_vr_ev'))[0]!.verificationEvidence;
+      const actions = await listActionsForCase('rc_vr_ev');
+      const evidence = actions[0]!.verificationEvidence;
       assert.ok(Array.isArray(evidence));
       assert.ok(evidence.some((e) => e.type === 'EXECUTION_RESULT'));
       assert.ok(evidence.some((e) => e.type === 'OBSERVED_PAYMENT_STATE'));
@@ -260,33 +285,37 @@ describe('outcome verification — live database', { skip }, () => {
       await seedCase('rc_vr_fields', 'pay_vr_fields');
       await executeThenVerify('rc_vr_fields', 'SUCCESS', 'SUCCEEDED');
 
-      const action = (await listActionsForCase('rc_vr_fields'))[0]!;
-      assert.ok(action.verifiedAt instanceof Date);
-      assert.ok((action.verificationReason ?? '').length > 0);
-      assert.equal(action.observedPaymentStatus, 'captured');
+      const actions = await listActionsForCase('rc_vr_fields');
+      assert.ok(actions[0]!.verifiedAt instanceof Date);
+      assert.ok((actions[0]!.verificationReason ?? '').length > 0);
+      assert.equal(actions[0]!.observedPaymentStatus, 'captured');
     });
 
     test('a VERIFIED outcome refreshes the stale payment record', async () => {
       await seedCase('rc_vr_refresh', 'pay_vr_refresh');
-      assert.equal((await findPaymentById('pay_vr_refresh'))!.status, 'failed');
+      const before = await findPaymentById('pay_vr_refresh');
+      assert.equal(before!.status, 'failed');
+
       await executeThenVerify('rc_vr_refresh', 'SUCCESS', 'SUCCEEDED');
-      assert.equal((await findPaymentById('pay_vr_refresh'))!.status, 'captured');
+
+      const after = await findPaymentById('pay_vr_refresh');
+      assert.equal(after!.status, 'captured', 'verified evidence should refresh the record');
     });
 
     test('evidence contains no secrets', async () => {
       await seedCase('rc_vr_sec', 'pay_vr_sec');
       await executeThenVerify('rc_vr_sec', 'SUCCESS', 'SUCCEEDED');
-      const serialised = JSON.stringify(
-        (await listActionsForCase('rc_vr_sec'))[0]!.verificationEvidence,
-      );
-      for (const secret of ['rzp_live', 'rzp_test', 'sk-ant-', 'password', 'recoverai_test_pw']) {
+      const actions = await listActionsForCase('rc_vr_sec');
+      const serialised = JSON.stringify(actions[0]!.verificationEvidence);
+      for (const secret of ['rzp_live', 'rzp_test', 'sk-ant-', 'password', 'Bearer', 'recoverai_test_pw']) {
         assert.ok(!serialised.includes(secret), `evidence leaked "${secret}"`);
       }
     });
   });
 
+  // -- idempotency ----------------------------------------------------------
   describe('idempotency', () => {
-    test('repeating verification returns the same verdict with no provider I/O', async () => {
+    test('repeating verification returns the same verdict', async () => {
       await seedCase('rc_vr_idem', 'pay_vr_idem');
       const provider = new MockRecoveryProvider({
         defaultOutcome: 'SUCCESS', observedState: 'SUCCEEDED',
@@ -346,15 +375,18 @@ describe('outcome verification — live database', { skip }, () => {
       await executeRecoveryCase('rc_vr_noreg', { provider, config: CONFIG });
       await verifyRecoveryCase('rc_vr_noreg', { provider });
 
-      // A flaky later lookup must not undo an evidenced outcome.
+      // The provider now reports FAILED — a flaky later lookup must not undo
+      // an outcome that was already evidenced.
       provider.setObservedState('FAILED');
       const again = await verifyRecoveryCase('rc_vr_noreg', { provider });
 
       assert.equal(again.verification!.status, 'VERIFIED');
-      assert.equal((await listActionsForCase('rc_vr_noreg'))[0]!.verificationStatus, 'VERIFIED');
+      const actions = await listActionsForCase('rc_vr_noreg');
+      assert.equal(actions[0]!.verificationStatus, 'VERIFIED');
     });
   });
 
+  // -- audit ----------------------------------------------------------------
   describe('audit trail', () => {
     test('the full chain is reconstructable', async () => {
       await seedCase('rc_vr_chain', 'pay_vr_chain');
@@ -400,6 +432,7 @@ describe('outcome verification — live database', { skip }, () => {
     });
   });
 
+  // -- API ------------------------------------------------------------------
   describe('POST /api/recovery/:caseId/verify', () => {
     test('returns 200 with a VERIFIED outcome', async () => {
       await seedCase('rc_vr_api', 'pay_vr_api');
@@ -425,12 +458,16 @@ describe('outcome verification — live database', { skip }, () => {
     });
 
     test('returns 404 for an unknown case', async () => {
-      const response = await app.inject({ method: 'POST', url: '/api/recovery/rc_vr_nosuch/verify' });
+      const response = await app.inject({
+        method: 'POST', url: '/api/recovery/rc_vr_nosuch/verify',
+      });
       assert.equal(response.statusCode, 404);
     });
 
     test('rejects a malformed case id', async () => {
-      const response = await app.inject({ method: 'POST', url: '/api/recovery/bad%20id/verify' });
+      const response = await app.inject({
+        method: 'POST', url: '/api/recovery/bad%20id/verify',
+      });
       assert.equal(response.statusCode, 400);
     });
 
@@ -444,13 +481,25 @@ describe('outcome verification — live database', { skip }, () => {
       assert.equal(second.json().already_verified, true);
     });
 
+    test('the response never leaks a secret or stack trace', async () => {
+      await seedCase('rc_vr_apisec', 'pay_vr_apisec');
+      await app.inject({ method: 'POST', url: '/api/recovery/rc_vr_apisec/execute' });
+      const response = await app.inject({ method: 'POST', url: '/api/recovery/rc_vr_apisec/verify' });
+      const raw = response.body;
+      assert.ok(!raw.includes('at Object.'));
+      assert.ok(!raw.includes('node_modules'));
+      assert.ok(!raw.includes('recoverai_test_pw'));
+    });
+
     test('verification never executes anything', async () => {
+      // A verify call on a case with no execution must not create one.
       await seedCase('rc_vr_apinoexec2', 'pay_vr_apinoexec2');
       await app.inject({ method: 'POST', url: '/api/recovery/rc_vr_apinoexec2/verify' });
       assert.equal((await listActionsForCase('rc_vr_apinoexec2')).length, 0);
     });
   });
 
+  // -- metrics --------------------------------------------------------------
   describe('business metrics are computable', () => {
     test('verified recoveries are distinguishable from executions', async () => {
       await seedCase('rc_vr_m1', 'pay_vr_m1');
@@ -458,12 +507,12 @@ describe('outcome verification — live database', { skip }, () => {
       await seedCase('rc_vr_m3', 'pay_vr_m3');
 
       await executeThenVerify('rc_vr_m1', 'SUCCESS', 'SUCCEEDED'); // recovered
-      await executeThenVerify('rc_vr_m2', 'SUCCESS', 'PENDING');   // unresolved
-      await executeThenVerify('rc_vr_m3', 'SUCCESS', 'FAILED');    // not recovered
+      await executeThenVerify('rc_vr_m2', 'SUCCESS', 'PENDING');   // executed, unresolved
+      await executeThenVerify('rc_vr_m3', 'SUCCESS', 'FAILED');    // executed, not recovered
 
       const { rows } = await getPool().query<{
-        executions: string; verified: string; not_recovered: string;
-        unresolved: string; recovered_amount: string;
+        executions: string; verified: string; not_recovered: string; unresolved: string;
+        recovered_amount: string;
       }>(
         `SELECT
            COUNT(*) FILTER (WHERE execution_status = 'SUCCESS')::text AS executions,

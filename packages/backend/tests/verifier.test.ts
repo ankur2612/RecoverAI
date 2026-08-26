@@ -17,7 +17,7 @@ function input(overrides: Partial<VerificationInput> = {}): VerificationInput {
     observedReference: 'ref_1',
     observationError: null,
     // Default to a stored record that does NOT contradict the observation.
-    // The stale-record case is exercised explicitly below.
+    // The contradiction case is exercised explicitly below.
     storedPaymentStatus: 'captured',
     now: NOW,
     ...overrides,
@@ -54,7 +54,8 @@ describe('verifier — the core rule: execution is not outcome', () => {
   });
 
   test('SUCCESS + observed UNKNOWN yields UNCONFIRMED', () => {
-    assert.equal(verify({ observedState: 'UNKNOWN' }).status, 'UNCONFIRMED');
+    const result = verify({ executionStatus: 'SUCCESS', observedState: 'UNKNOWN' });
+    assert.equal(result.status, 'UNCONFIRMED');
   });
 
   test('recovered is true for VERIFIED and false for everything else', () => {
@@ -74,8 +75,8 @@ describe('verifier — RULE 2: failed execution', () => {
   });
 
   test('a failed execution is never reported as recovered, whatever is observed', () => {
-    // Even a SUCCEEDED observation cannot make a rejected request into a
-    // recovery by this action — that payment succeeded some other way.
+    // Even a SUCCEEDED payment observation cannot make a rejected request into
+    // a recovery by this action — that payment succeeded some other way.
     for (const observed of OBSERVED_PAYMENT_STATES) {
       const result = verify({ executionStatus: 'FAILED', observedState: observed });
       assert.notEqual(result.status, 'VERIFIED', `observed ${observed}`);
@@ -86,8 +87,8 @@ describe('verifier — RULE 2: failed execution', () => {
 
 describe('verifier — RULE 1: UNKNOWN resolution', () => {
   test('UNCONFIRMED execution + observed SUCCEEDED resolves to VERIFIED', () => {
-    // The resolution path: an ambiguous execution whose payment is observably
-    // complete WAS a recovery, established without any retry.
+    // This is the resolution path: an ambiguous execution whose payment is
+    // observably complete WAS a recovery, established without any retry.
     const result = verify({ executionStatus: 'UNCONFIRMED', observedState: 'SUCCEEDED' });
     assert.equal(result.status, 'VERIFIED');
     assert.equal(result.recovered, true);
@@ -95,29 +96,26 @@ describe('verifier — RULE 1: UNKNOWN resolution', () => {
   });
 
   test('UNCONFIRMED execution + observed PENDING stays UNCONFIRMED', () => {
-    assert.equal(
-      verify({ executionStatus: 'UNCONFIRMED', observedState: 'PENDING' }).status,
-      'UNCONFIRMED',
-    );
+    const result = verify({ executionStatus: 'UNCONFIRMED', observedState: 'PENDING' });
+    assert.equal(result.status, 'UNCONFIRMED');
   });
 
   test('UNCONFIRMED execution + observed FAILED resolves to NOT_RECOVERED', () => {
-    assert.equal(
-      verify({ executionStatus: 'UNCONFIRMED', observedState: 'FAILED' }).status,
-      'NOT_RECOVERED',
-    );
+    const result = verify({ executionStatus: 'UNCONFIRMED', observedState: 'FAILED' });
+    assert.equal(result.status, 'NOT_RECOVERED');
   });
 
   test('UNCONFIRMED execution + unobservable payment stays UNCONFIRMED', () => {
-    assert.equal(
-      verify({ executionStatus: 'UNCONFIRMED', observedState: 'UNKNOWN' }).status,
-      'UNCONFIRMED',
-    );
+    const result = verify({
+      executionStatus: 'UNCONFIRMED', observedState: 'UNKNOWN',
+    });
+    assert.equal(result.status, 'UNCONFIRMED');
   });
 
   test('UNCONFIRMED execution with no observation stays UNCONFIRMED', () => {
     const result = verify({
-      executionStatus: 'UNCONFIRMED', observedState: null, observationError: 'lookup failed',
+      executionStatus: 'UNCONFIRMED', observedState: null,
+      observationError: 'lookup failed',
     });
     assert.equal(result.status, 'UNCONFIRMED');
   });
@@ -131,7 +129,7 @@ describe('verifier — RULE 4: fail closed', () => {
   });
 
   test('PENDING, EXECUTING and SKIPPED_DUPLICATE executions are unconfirmed', () => {
-    // None carry a provider verdict, so none can support an outcome.
+    // None of these carry a provider verdict, so none can support an outcome.
     for (const status of ['PENDING', 'EXECUTING', 'SKIPPED_DUPLICATE'] as const) {
       const result = verify({ executionStatus: status });
       assert.equal(result.status, 'UNCONFIRMED', status);
@@ -144,21 +142,28 @@ describe('verifier — RULE 4: fail closed', () => {
     // still reads "failed" locally until verification refreshes it. Treating
     // that lag as a contradiction would block every legitimate recovery.
     const result = verify({
-      executionStatus: 'SUCCESS', observedState: 'SUCCEEDED', storedPaymentStatus: 'failed',
+      executionStatus: 'SUCCESS',
+      observedState: 'SUCCEEDED',
+      storedPaymentStatus: 'failed',
     });
     assert.equal(result.status, 'VERIFIED');
     assert.ok(result.reason.includes('refreshed'), result.reason);
     // The stale value is still recorded as evidence, so the lag is auditable.
-    assert.equal(
-      result.evidence.find((e) => e.type === 'STORED_PAYMENT_STATE')?.value,
-      'failed',
-    );
+    const stored = result.evidence.find((e) => e.type === 'STORED_PAYMENT_STATE');
+    assert.equal(stored?.value, 'failed');
+  });
+
+  test('a corroborating stored record permits VERIFIED', () => {
+    const result = verify({
+      executionStatus: 'SUCCESS',
+      observedState: 'SUCCEEDED',
+      storedPaymentStatus: 'captured',
+    });
+    assert.equal(result.status, 'VERIFIED');
   });
 
   test('no input combination ever yields a status outside the enum', () => {
-    for (const execStatus of [
-      'PENDING', 'EXECUTING', 'SUCCESS', 'FAILED', 'UNCONFIRMED', 'SKIPPED_DUPLICATE',
-    ] as const) {
+    for (const execStatus of ['PENDING', 'EXECUTING', 'SUCCESS', 'FAILED', 'UNCONFIRMED', 'SKIPPED_DUPLICATE'] as const) {
       for (const observed of [...OBSERVED_PAYMENT_STATES, null]) {
         for (const stored of ['captured', 'failed', 'authorized', null]) {
           const result = verify({
@@ -180,14 +185,16 @@ describe('verifier — RULE 4: fail closed', () => {
 
 describe('verifier — evidence model', () => {
   test('every verdict records the execution result as evidence', () => {
-    const exec = verify().evidence.find((e) => e.type === 'EXECUTION_RESULT');
+    const result = verify();
+    const exec = result.evidence.find((e) => e.type === 'EXECUTION_RESULT');
     assert.ok(exec, 'no execution evidence');
     assert.equal(exec.source, 'PROVIDER_EXECUTION');
     assert.equal(exec.value, 'SUCCESS');
   });
 
-  test('a VERIFIED verdict records execution, observation and stored state', () => {
-    const types = verify({ observedState: 'SUCCEEDED' }).evidence.map((e) => e.type);
+  test('a VERIFIED verdict records both execution and observation', () => {
+    const result = verify({ observedState: 'SUCCEEDED', storedPaymentStatus: 'captured' });
+    const types = result.evidence.map((e) => e.type);
     assert.ok(types.includes('EXECUTION_RESULT'));
     assert.ok(types.includes('OBSERVED_PAYMENT_STATE'));
     assert.ok(types.includes('STORED_PAYMENT_STATE'));
@@ -200,15 +207,24 @@ describe('verifier — evidence model', () => {
     }
   });
 
+  test('the reason names the facts, not a guess', () => {
+    const verified = verify({ observedState: 'SUCCEEDED', storedPaymentStatus: 'captured' });
+    assert.ok(verified.reason.includes('observably completed'), verified.reason);
+    const pending = verify({ observedState: 'PENDING' });
+    assert.ok(pending.reason.includes('pending'), pending.reason);
+  });
+
   test('evidence contains no secrets', () => {
-    const serialised = JSON.stringify(verify().evidence).toLowerCase();
-    for (const secret of ['rzp_live', 'rzp_test', 'sk-ant-', 'password', 'authorization', 'bearer']) {
-      assert.ok(!serialised.includes(secret), `leaked "${secret}"`);
+    const serialised = JSON.stringify(verify().evidence);
+    for (const secret of ['rzp_live', 'rzp_test', 'sk-ant-', 'password', 'authorization', 'Bearer']) {
+      assert.ok(!serialised.toLowerCase().includes(secret.toLowerCase()), `leaked "${secret}"`);
     }
   });
 
-  test('evidence is structured, not a free-text blob', () => {
-    for (const item of verify().evidence) {
+  test('evidence is a structured array, not a free-text blob', () => {
+    const result = verify();
+    assert.ok(Array.isArray(result.evidence));
+    for (const item of result.evidence) {
       assert.equal(typeof item.type, 'string');
       assert.equal(typeof item.source, 'string');
       assert.equal(typeof item.value, 'string');
@@ -238,14 +254,12 @@ describe('verifier — determinism and purity', () => {
   test('AI confidence is not an input to verification', () => {
     // Structural guarantee: there is nowhere to put it.
     const keys = Object.keys(input());
-    for (const forbidden of [
-      'confidence', 'aiConfidence', 'recommendation', 'expectedRecoveryProbability',
-    ]) {
+    for (const forbidden of ['confidence', 'aiConfidence', 'recommendation', 'expectedRecoveryProbability']) {
       assert.ok(!keys.includes(forbidden), `VerificationInput exposes "${forbidden}"`);
     }
   });
 
-  test('verifiedAt comes from the injected clock', () => {
+  test('verifiedAt comes from the injected clock, not the wall clock', () => {
     const other = new Date('2027-01-01T00:00:00.000Z');
     assert.equal(verify({ now: other }).verifiedAt, other.toISOString());
   });
@@ -253,11 +267,13 @@ describe('verifier — determinism and purity', () => {
 
 describe('verifier — state machine transitions', () => {
   test('a fresh action accepts any verdict', () => {
-    for (const next of VERIFICATION_STATUSES) assert.equal(canTransition(null, next), true, next);
+    for (const next of VERIFICATION_STATUSES) {
+      assert.equal(canTransition(null, next), true, next);
+    }
   });
 
   test('UNCONFIRMED may be revised to anything', () => {
-    // The resolution path; it must stay open.
+    // This is the resolution path; it must stay open.
     for (const next of VERIFICATION_STATUSES) {
       assert.equal(canTransition('UNCONFIRMED', next), true, next);
     }
@@ -266,6 +282,7 @@ describe('verifier — state machine transitions', () => {
   test('VERIFIED never regresses', () => {
     assert.equal(canTransition('VERIFIED', 'UNCONFIRMED'), false);
     assert.equal(canTransition('VERIFIED', 'NOT_RECOVERED'), false);
+    // Re-affirming the same verdict is harmless.
     assert.equal(canTransition('VERIFIED', 'VERIFIED'), true);
   });
 
@@ -294,7 +311,8 @@ describe('mock provider — verification support', () => {
 
   test('per-payment overrides let one test hold several payments', async () => {
     const provider = new MockRecoveryProvider({
-      observedState: 'PENDING', observedStateByPayment: { pay_done: 'SUCCEEDED' },
+      observedState: 'PENDING',
+      observedStateByPayment: { pay_done: 'SUCCEEDED' },
     });
     assert.equal((await provider.getPaymentStatus('pay_done')).state, 'SUCCEEDED');
     assert.equal((await provider.getPaymentStatus('pay_other')).state, 'PENDING');

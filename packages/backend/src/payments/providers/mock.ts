@@ -36,7 +36,7 @@ export interface MockProviderOptions {
   observedState?: ObservedPaymentState;
   /** Per-payment overrides, so one test can hold several payments at once. */
   observedStateByPayment?: Record<string, ObservedPaymentState>;
-  /** Make the status lookup itself fail, exercising the fail-closed path. */
+  /** Make the status lookup itself throw, exercising the fail-closed path. */
   throwOnStatusLookup?: boolean;
 }
 
@@ -72,7 +72,7 @@ export class MockRecoveryProvider implements RecoveryProvider {
     return this.calls.length;
   }
 
-  /** Number of status lookups. Proves verification did not re-execute. */
+  /** Number of status lookups performed. Proves verification did not re-execute. */
   get statusLookupCount(): number {
     return this.statusLookups.length;
   }

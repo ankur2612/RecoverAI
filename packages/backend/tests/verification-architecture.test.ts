@@ -8,7 +8,8 @@ import { dirname, join, relative } from 'node:path';
  * ARCHITECTURAL TESTS FOR THE VERIFICATION BOUNDARY
  *
  * Verification's value is that it answers "what happened?" from evidence, with
- * no ability to influence what happens next.
+ * no ability to influence what happens next. The constraints below enforce that
+ * at the import level rather than by convention.
  */
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', 'src');
@@ -40,9 +41,12 @@ describe('verification architecture — the verifier is pure', () => {
     assert.ok(!/new Date\(/.test(verifierSource), 'verifier constructs a Date');
   });
 
-  test('the verifier uses no randomness and performs no async work', () => {
+  test('the verifier uses no randomness', () => {
     assert.ok(!/Math\.random/.test(verifierSource));
     assert.ok(!/randomUUID/.test(verifierSource));
+  });
+
+  test('the verifier performs no async work', () => {
     // A synchronous signature means no I/O can hide inside it.
     assert.ok(!/\bawait\b/.test(verifierSource), 'verifier awaits something');
     assert.ok(!/async /.test(verifierSource), 'verifier declares an async function');
@@ -56,17 +60,19 @@ describe('verification architecture — the verifier is pure', () => {
 describe('verification architecture — forbidden dependencies', () => {
   const files = [VERIFIER, join(SRC, 'recovery', 'verify-service.ts')];
 
-  test('verification imports no AI provider', () => {
+  test('verification imports no AI provider implementation', () => {
     // An outcome must never be inferred from a model's confidence.
     for (const file of files) {
       const source = readFileSync(file, 'utf8');
       const rel = relative(SRC, file);
       assert.ok(!/from ['"].*agents\//.test(source), `${rel} imports the AI layer`);
-      assert.ok(!/gemini/i.test(source), `${rel} mentions Gemini`);
+      assert.ok(!/from ['"]@anthropic-ai/.test(source), `${rel} imports an LLM SDK`);
+      assert.ok(!/from ['"]openai['"]/.test(source), `${rel} imports an LLM SDK`);
     }
   });
 
   test('verification imports no policy evaluator', () => {
+    // Verification reports facts; it does not authorize anything.
     for (const file of files) {
       const source = readFileSync(file, 'utf8');
       const rel = relative(SRC, file);
@@ -77,7 +83,7 @@ describe('verification architecture — forbidden dependencies', () => {
 
   test('verification imports no executor', () => {
     // The one dependency that would let verification "resolve" an ambiguous
-    // outcome by retrying it — exactly what the design forbids.
+    // outcome by retrying it — exactly the behaviour the design forbids.
     for (const file of files) {
       const source = readFileSync(file, 'utf8');
       const rel = relative(SRC, file);
@@ -94,14 +100,36 @@ describe('verification architecture — forbidden dependencies', () => {
       const rel = relative(SRC, file);
       assert.ok(!/from ['"].*datasets\//.test(source), `${rel} imports datasets`);
       assert.ok(!source.includes('payment_ground_truth'), `${rel} references the labels table`);
-      for (const label of ['groundTruth', 'idealAction', 'evaluationLabel']) {
+      for (const label of ['groundTruth', 'idealAction', 'evaluationLabel', 'recoveryProbability']) {
         assert.ok(!source.includes(label), `${rel} references "${label}"`);
       }
+    }
+  });
+
+  test('verification imports no HTTP layer or vendor SDK', () => {
+    for (const file of files) {
+      const source = readFileSync(file, 'utf8');
+      const rel = relative(SRC, file);
+      assert.ok(!/from ['"]fastify['"]/.test(source), `${rel} imports Fastify`);
+      assert.ok(!/from ['"].*\/api\//.test(source), `${rel} imports a route`);
+      assert.ok(!/from ['"]razorpay['"]/.test(source), `${rel} imports Razorpay`);
+      assert.ok(!/\bfetch\(/.test(source), `${rel} calls fetch()`);
     }
   });
 });
 
 describe('verification architecture — the service cannot act', () => {
+  test('the service depends on the provider abstraction, not an implementation', () => {
+    assert.ok(
+      /from ['"].*payments\/provider\.ts['"]/.test(serviceSource),
+      'service does not import the provider interface',
+    );
+    assert.ok(
+      !/from ['"].*providers\/mock/.test(serviceSource),
+      'service imports a concrete provider',
+    );
+  });
+
   test('the service only ever READS provider state', () => {
     // getPaymentStatus is a read; executeAction is not. The absence of the
     // latter is what guarantees verification never causes an effect.
@@ -113,8 +141,11 @@ describe('verification architecture — the service cannot act', () => {
   });
 
   test('the service never marks a payment recovered without a VERIFIED verdict', () => {
+    // The payment refresh must be gated on the verdict, not on execution.
+    // The CALL site (not the import) must sit inside a VERIFIED guard.
     const callIndex = serviceSource.lastIndexOf('await refreshPaymentStatusFromEvidence');
     assert.ok(callIndex > 0, 'service never refreshes the payment record');
+    // Look back far enough to clear the explanatory comment above the guard.
     const guard = serviceSource.slice(Math.max(0, callIndex - 500), callIndex);
     assert.ok(
       guard.includes("verification.status === 'VERIFIED'"),
@@ -126,27 +157,68 @@ describe('verification architecture — the service cannot act', () => {
     const match = serviceSource.match(/case 'VERIFIED':[\s\S]{0,200}?return '([A-Z_]+)'/);
     assert.ok(match, 'the VERIFIED case status mapping was not found');
     assert.equal(match[1], 'RECOVERED');
-    assert.equal(
-      [...serviceSource.matchAll(/return 'RECOVERED'/g)].length,
-      1,
-      'RECOVERED is returned from more than one branch',
-    );
+    // And no other branch may return it.
+    const recoveredReturns = [...serviceSource.matchAll(/return 'RECOVERED'/g)];
+    assert.equal(recoveredReturns.length, 1, 'RECOVERED is returned from more than one branch');
+  });
+});
+
+describe('verification architecture — the API delegates', () => {
+  test('the verify route calls the service, not the verifier directly', () => {
+    // Calling the pure verifier from a route would skip persistence and audit.
+    const route = readFileSync(join(SRC, 'api', 'recovery.ts'), 'utf8');
+    assert.ok(/verifyRecoveryCase/.test(route), 'route does not use the verification service');
+    assert.ok(!/verifyOutcome\(/.test(route), 'route calls the pure verifier directly');
+  });
+
+  test('no route imports a provider implementation', () => {
+    for (const file of walk(join(SRC, 'api'))) {
+      const source = readFileSync(file, 'utf8');
+      assert.ok(
+        !/from ['"].*payments\/providers\//.test(source),
+        `${relative(SRC, file)} imports a concrete provider`,
+      );
+    }
   });
 });
 
 describe('verification architecture — no other layer claims recovery', () => {
   test('the executor never marks anything recovered or verified', () => {
     const executor = readFileSync(join(SRC, 'recovery', 'executor.ts'), 'utf8');
-    assert.ok(!/'RECOVERED'/.test(executor), 'the executor references the RECOVERED status');
+    assert.ok(
+      !/'RECOVERED'/.test(executor),
+      'the executor references the RECOVERED status',
+    );
     assert.ok(
       !/verificationStatus|recordVerification/.test(executor),
       'the executor writes a verification verdict',
     );
+    // It may only ever report verified: false.
     assert.ok(/verified: false/.test(executor), 'the executor no longer pins verified to false');
     assert.ok(!/verified: true/.test(executor), 'the executor can claim verification');
   });
 
+  test('the AI layer cannot reach verification', () => {
+    for (const file of walk(join(SRC, 'agents'))) {
+      const source = readFileSync(file, 'utf8');
+      const rel = relative(SRC, file);
+      assert.ok(!/from ['"].*verif/.test(source), `${rel} imports the verification layer`);
+    }
+  });
+
+  test('the policy layer cannot reach verification', () => {
+    for (const file of walk(join(SRC, 'policies'))) {
+      const source = readFileSync(file, 'utf8');
+      assert.ok(
+        !/from ['"].*verif/.test(source),
+        `${relative(SRC, file)} imports the verification layer`,
+      );
+    }
+  });
+
   test('only the verification service refreshes payment state from a recovery', () => {
+    // Exactly one caller of the guarded refresh, so there is one path from an
+    // action to a mutated payment row.
     const callers = walk(SRC).filter((file) => {
       const rel = relative(SRC, file).replace(/\\/g, '/');
       if (rel === 'payments/repository.ts') return false;
@@ -159,16 +231,24 @@ describe('verification architecture — no other layer claims recovery', () => {
     );
     assert.ok(callers[0]!.endsWith('verify-service.ts'));
   });
+});
 
-  test('the AI and policy layers cannot reach verification', () => {
-    for (const dir of ['agents', 'policies']) {
-      for (const file of walk(join(SRC, dir))) {
-        const source = readFileSync(file, 'utf8');
-        assert.ok(
-          !/from ['"].*verif/.test(source),
-          `${relative(SRC, file)} imports the verification layer`,
-        );
-      }
+describe('verification architecture — no vendor SDK is pulled in', () => {
+  test('no module imports the Razorpay SDK', () => {
+    // Still true after the Razorpay provider landed: it talks HTTP directly
+    // rather than pulling in the SDK, so no vendor type can leak upward.
+    for (const file of walk(SRC)) {
+      const source = readFileSync(file, 'utf8');
+      assert.ok(
+        !/from ['"]razorpay['"]/.test(source) && !/require\(['"]razorpay['"]\)/.test(source),
+        `${relative(SRC, file)} imports the Razorpay SDK`,
+      );
     }
+  });
+
+  test('the mock provider remains deterministic', () => {
+    const mock = readFileSync(join(SRC, 'payments', 'providers', 'mock.ts'), 'utf8');
+    assert.ok(!/Math\.random/.test(mock), 'mock provider uses randomness');
+    assert.ok(!/randomUUID/.test(mock));
   });
 });

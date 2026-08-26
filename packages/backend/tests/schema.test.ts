@@ -115,17 +115,10 @@ describe('migrations — enum parity with TypeScript', () => {
   });
 
   test('execution status constraint matches EXECUTION_STATUSES', () => {
-    // The constraint is redefined by a later migration (002 adds EXECUTING),
-    // so parity must be checked against the LAST definition, not the first.
-    const matches = [
-      ...sql.matchAll(
-        /CONSTRAINT recovery_actions_execution_check[\s\S]*?\(([\s\S]*?)\)\s*\n/g,
-      ),
-    ];
-    assert.ok(matches.length > 0, 'execution status constraint not found');
-    const latest = matches.at(-1)![1]!;
-    const values = [...latest.matchAll(/'([A-Z_]+)'/g)].map((m) => m[1]!).sort();
-    assert.deepEqual(values, [...EXECUTION_STATUSES].sort());
+    assert.deepEqual(
+      checkValues('recovery_actions_execution_check'),
+      [...EXECUTION_STATUSES].sort(),
+    );
   });
 
   test('verification status constraint matches VERIFICATION_STATUSES', () => {
@@ -177,7 +170,10 @@ describe('migrations — safety constraints', () => {
     const latest = definitions.at(-1)![1]!;
     const statuses = [...latest.matchAll(/'([A-Z_]+)'/g)].map((m) => m[1]!).sort();
     assert.deepEqual(statuses, [
-      'AWAITING_APPROVAL', 'AWAITING_VERIFICATION', 'EXECUTING', 'OPEN',
+      'AWAITING_APPROVAL',
+      'AWAITING_VERIFICATION',
+      'EXECUTING',
+      'OPEN',
     ]);
   });
 
