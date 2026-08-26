@@ -42,7 +42,19 @@ const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
  */
 export const DEFAULT_GEMINI_MODEL = 'gemini-3.7-flash';
 
-const DEFAULT_TIMEOUT_MS = 20_000;
+/**
+ * Wall-clock ceiling for one generateContent call.
+ *
+ * Raised from 20s after live testing: gemini-3.7-flash under load takes
+ * 25-60s to answer (and sometimes 503s only after ~60s). A tight timeout
+ * turned a slow-but-successful response into a provider error, which the
+ * analyze pipeline then treated as a failed diagnosis.
+ *
+ * A long ceiling is safe here because a timeout is not a financial action:
+ * the pipeline falls back to the deterministic baseline, and policy still
+ * authorizes independently. Overridable per-deployment via `timeoutMs`.
+ */
+const DEFAULT_TIMEOUT_MS = 60_000;
 
 /** Injectable HTTP surface so unit tests never touch the network. */
 export interface GeminiTransport {
@@ -72,6 +84,18 @@ export class GeminiConfigurationError extends Error {
 /** Raised for transport/HTTP failures, so analyze can fall back deterministically. */
 export class GeminiRequestError extends Error {
   override name = 'GeminiRequestError';
+  /**
+   * True for conditions that may succeed on a later attempt: 429 rate limits,
+   * 5xx capacity errors, and timeouts. Never used to retry automatically here
+   * — the provider makes exactly one request — but it lets an operator or a
+   * future scheduler distinguish "overloaded" from "malformed".
+   */
+  readonly transient: boolean;
+
+  constructor(message: string, transient = false) {
+    super(message);
+    this.transient = transient;
+  }
 }
 
 /** The response fields we read. Everything else is discarded. */
@@ -171,8 +195,15 @@ export class GeminiAIProvider implements AIProvider {
       const raw = await response.text();
 
       if (!response.ok) {
+        // Distinguish transient capacity/rate limits from a genuine bad
+        // request. Both still throw — a failed diagnosis must never become an
+        // optimistic recommendation — but the flag lets a caller or operator
+        // tell "try again later" apart from "this request is wrong".
+        const transient = response.status === 429 || response.status >= 500;
         throw new GeminiRequestError(
-          `Gemini responded ${response.status}: ${sanitiseGeminiError(raw)}`,
+          `Gemini responded ${response.status}${transient ? ' (transient)' : ''}: ` +
+            sanitiseGeminiError(raw),
+          transient,
         );
       }
 
@@ -207,7 +238,11 @@ export class GeminiAIProvider implements AIProvider {
         throw error;
       }
       if ((error as Error).name === 'AbortError') {
-        throw new GeminiRequestError(`Gemini request timed out after ${this.#timeoutMs}ms.`);
+        // A timeout is transient: the model may simply be under load.
+        throw new GeminiRequestError(
+          `Gemini request timed out after ${this.#timeoutMs}ms.`,
+          true,
+        );
       }
       throw new GeminiRequestError(
         `Gemini request failed: ${sanitiseGeminiError((error as Error).message)}`,

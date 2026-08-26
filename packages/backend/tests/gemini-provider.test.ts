@@ -427,6 +427,87 @@ describe('gemini — failure handling', () => {
   });
 });
 
+describe('gemini — transient failure classification (live-test regression)', () => {
+  // Live smoke testing found gemini-3.7-flash returning 503 "high demand" and
+  // taking 25-60s under load. Two provider-local fixes came out of it: a
+  // longer default timeout, and marking capacity/rate errors as transient so
+  // an operator can tell "overloaded" apart from "malformed request".
+
+  test('the default timeout accommodates a loaded model', () => {
+    // A 20s ceiling turned slow-but-successful responses into provider errors.
+    const source = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'agents', 'diagnosis',
+        'providers', 'gemini.ts'),
+      'utf8',
+    );
+    const match = source.match(/const DEFAULT_TIMEOUT_MS = ([0-9_]+);/);
+    assert.ok(match, 'DEFAULT_TIMEOUT_MS not found');
+    const ms = Number(match[1]!.replace(/_/g, ''));
+    assert.ok(ms >= 60_000, `default timeout ${ms}ms is too tight for a loaded model`);
+  });
+
+  test('a 503 is classified transient', async () => {
+    const { transport } = transportFor({
+      status: 503, ok: false,
+      raw: '{"error":{"code":503,"message":"This model is currently experiencing high demand."}}',
+    });
+    try {
+      await provider(transport).diagnose(inputFor());
+      assert.fail('should have thrown');
+    } catch (error) {
+      assert.ok(error instanceof GeminiRequestError);
+      assert.equal(error.transient, true, '503 should be transient');
+      assert.ok(error.message.includes('(transient)'));
+    }
+  });
+
+  test('a 429 is classified transient', async () => {
+    const { transport } = transportFor({ status: 429, ok: false, raw: '{"error":"quota"}' });
+    try {
+      await provider(transport).diagnose(inputFor());
+      assert.fail('should have thrown');
+    } catch (error) {
+      assert.equal((error as GeminiRequestError).transient, true);
+    }
+  });
+
+  test('a 400 is NOT transient — retrying would not help', async () => {
+    const { transport } = transportFor({ status: 400, ok: false, raw: '{"error":"bad request"}' });
+    try {
+      await provider(transport).diagnose(inputFor());
+      assert.fail('should have thrown');
+    } catch (error) {
+      assert.equal((error as GeminiRequestError).transient, false);
+      assert.ok(!(error as Error).message.includes('(transient)'));
+    }
+  });
+
+  test('a timeout is classified transient', async () => {
+    const slow: GeminiTransport = async (_url, init) =>
+      new Promise((_resolve, reject) => {
+        init.signal?.addEventListener('abort', () => {
+          const error = new Error('aborted');
+          error.name = 'AbortError';
+          reject(error);
+        });
+      });
+    const p = new GeminiAIProvider({ apiKey: API_KEY, transport: slow, timeoutMs: 30 });
+    try {
+      await p.diagnose(inputFor());
+      assert.fail('should have thrown');
+    } catch (error) {
+      assert.equal((error as GeminiRequestError).transient, true);
+    }
+  });
+
+  test('a transient failure still throws — never an optimistic diagnosis', async () => {
+    // The classification is informational only. A capacity error must not
+    // become a recommendation; analyze falls back to the deterministic baseline.
+    const { transport } = transportFor({ status: 503, ok: false, raw: '{"error":"busy"}' });
+    await assert.rejects(() => provider(transport).diagnose(inputFor()), GeminiRequestError);
+  });
+});
+
 describe('gemini — no secret leakage', () => {
   test('the API key never appears in an error message', async () => {
     const { transport } = transportFor({
