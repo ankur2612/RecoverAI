@@ -11,6 +11,12 @@
 
 import { DEFAULT_GEMINI_MODEL } from '../agents/diagnosis/providers/gemini.ts';
 
+/**
+ * Shortest token accepted when authentication is enabled. Not a strength
+ * guarantee — just a floor that rejects obviously trivial values like "x".
+ */
+export const MIN_AUTH_TOKEN_LENGTH = 16;
+
 export type AiProviderName = 'mock' | 'claude' | 'openai' | 'gemini';
 export type PaymentProviderName = 'mock' | 'razorpay';
 
@@ -40,6 +46,25 @@ export interface DatasetConfig {
   customerRepeatRate: number;
 }
 
+/**
+ * HTTP authentication settings.
+ *
+ * This is AUTHENTICATION only — "who may call this API". It is NOT
+ * authorization: whether a specific recovery action is permitted remains the
+ * exclusive job of the deterministic policy engine. A valid token buys access
+ * to the endpoint, never permission to move money.
+ */
+export interface AuthConfig {
+  /** When false, the API is open — development and test posture only. */
+  enabled: boolean;
+  /**
+   * The shared secret. Present only when `enabled` is true; `loadConfig`
+   * refuses to produce an enabled-but-tokenless configuration, so an enabled
+   * deployment can never accidentally accept every caller.
+   */
+  token: string | undefined;
+}
+
 export interface AppConfig {
   nodeEnv: string;
   port: number;
@@ -59,6 +84,7 @@ export interface AppConfig {
     razorpayKeyId: string | undefined;
     razorpayKeySecret: string | undefined;
   };
+  auth: AuthConfig;
   policy: PolicyConfig;
   dataset: DatasetConfig;
   demo: {
@@ -118,6 +144,21 @@ function readEnum<T extends string>(env: Env, key: string, allowed: readonly T[]
   return raw as T;
 }
 
+/**
+ * Strict boolean reader.
+ *
+ * Accepts only the unambiguous spellings. A typo like AUTH_ENABLED=yes must
+ * not silently read as false and quietly disable authentication — it throws.
+ */
+function readBool(env: Env, key: string, fallback: boolean): boolean {
+  const raw = readOptional(env, key);
+  if (raw === undefined) return fallback;
+  const lowered = raw.toLowerCase();
+  if (lowered === 'true' || lowered === '1') return true;
+  if (lowered === 'false' || lowered === '0') return false;
+  throw new ConfigError(`${key} must be one of true | false | 1 | 0, received "${raw}"`);
+}
+
 export function loadConfig(env: Env = process.env): AppConfig {
   const aiProvider = readEnum(
     env,
@@ -174,6 +215,36 @@ export function loadConfig(env: Env = process.env): AppConfig {
     }
   }
 
+  // -- authentication ------------------------------------------------------
+  //
+  // Default OFF. The repository's existing offline and DB-backed suites call
+  // the API with no credentials, and the default posture must match the
+  // documented development behaviour rather than silently breaking them.
+  // Enabling authentication is an explicit deployment decision.
+  const authEnabled = readBool(env, 'AUTH_ENABLED', false);
+  const authToken = readOptional(env, 'API_AUTH_TOKEN');
+
+  // FAIL CLOSED. An enabled-but-tokenless configuration is the dangerous
+  // middle state: the operator believes the API is protected while every
+  // request is compared against nothing. Refuse to start instead.
+  //
+  // readOptional() already treats a whitespace-only value as absent, so
+  // API_AUTH_TOKEN="" and API_AUTH_TOKEN="   " both land here.
+  if (authEnabled && authToken === undefined) {
+    throw new ConfigError(
+      'AUTH_ENABLED=true requires API_AUTH_TOKEN to be set to a non-empty value. ' +
+        'RecoverAI fails closed rather than serving an unprotected API that appears protected.',
+    );
+  }
+  // A token short enough to be guessable is worse than no token, because it
+  // creates false confidence. The value itself is never echoed.
+  if (authEnabled && authToken !== undefined && authToken.length < MIN_AUTH_TOKEN_LENGTH) {
+    throw new ConfigError(
+      `API_AUTH_TOKEN must be at least ${MIN_AUTH_TOKEN_LENGTH} characters. ` +
+        'The supplied value is too short to resist guessing. (The value is not shown.)',
+    );
+  }
+
   const policy: PolicyConfig = {
     maxRetryAttempts: readInt(env, 'POLICY_MAX_RETRY_ATTEMPTS', 3, 0, 10),
     maxAutomatedAmount: readInt(env, 'POLICY_MAX_AUTOMATED_AMOUNT', 1_000_000, 0, 1_000_000_000),
@@ -215,6 +286,12 @@ export function loadConfig(env: Env = process.env): AppConfig {
       razorpayKeyId,
       razorpayKeySecret,
     },
+    auth: {
+      enabled: authEnabled,
+      // Carried only when authentication is on, so a stray token in the
+      // environment of an open deployment is not retained in memory.
+      token: authEnabled ? authToken : undefined,
+    },
     policy,
     dataset,
     demo: {
@@ -252,6 +329,12 @@ export function redactedConfig(config: AppConfig) {
       credentialPresent:
         config.payments.provider === 'mock' || config.payments.razorpayKeyId !== undefined,
       mode: 'test' as const,
+    },
+    auth: {
+      enabled: config.auth.enabled,
+      // Presence ONLY. The token itself must never appear in a health
+      // response, a log line, or a serialized config dump.
+      credentialPresent: config.auth.token !== undefined,
     },
     policy: config.policy,
     dataset: config.dataset,
