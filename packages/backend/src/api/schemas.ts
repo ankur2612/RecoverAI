@@ -130,6 +130,42 @@ export const analyzeRequestSchema = z
   })
   .strict();
 
+/**
+ * POST /api/recovery/runs
+ *
+ * Every field is optional: an empty body runs the default population. `execute`
+ * defaults to true, so a caller must opt OUT of acting rather than opt in —
+ * consistent with the endpoint's name. `.strict()` rejects unknown keys so a
+ * typo like "dry_run" fails loudly instead of silently executing.
+ */
+export const batchRunRequestSchema = z
+  .object({
+    merchant_id: identifier('merchant_id').optional(),
+    statuses: z
+      .array(
+        z.enum(PAYMENT_STATUSES, {
+          errorMap: () => ({ message: `statuses must contain only ${PAYMENT_STATUSES.join(', ')}` }),
+        }),
+      )
+      .min(1, 'statuses must not be empty')
+      .optional(),
+    limit: z
+      .number({ invalid_type_error: 'limit must be a number' })
+      .int('limit must be an integer')
+      .min(1, 'limit must be at least 1')
+      .max(1000, 'limit must be 1000 or fewer')
+      .optional(),
+    execute: z.boolean({ invalid_type_error: 'execute must be a boolean' }).optional(),
+  })
+  .strict();
+
+/** GET /api/analytics/recovery — read-only, so the only filter is merchant. */
+export const analyticsQuerySchema = z
+  .object({
+    merchant_id: identifier('merchant_id').optional(),
+  })
+  .strict();
+
 /** Flatten a ZodError into a stable, client-safe shape. */
 export function formatZodIssues(error: z.ZodError): { field: string; message: string }[] {
   return error.issues.map((issue) => ({

@@ -148,8 +148,10 @@ describe('auth architecture — the domain cannot see authentication', () => {
 
 describe('auth architecture — authentication lives only at the HTTP boundary', () => {
   test('only app.ts registers the auth hook', () => {
+    // Comments stripped: a doc comment in another module explaining WHERE the
+    // hook is installed is documentation, not a second registration.
     const registrants = walk(SRC).filter(
-      (file) => file !== AUTH && /registerAuth/.test(readFileSync(file, 'utf8')),
+      (file) => file !== AUTH && /registerAuth/.test(code(file)),
     );
     assert.deepEqual(
       registrants.map((f) => relative(SRC, f).replace(/\\/g, '/')),
@@ -175,7 +177,9 @@ describe('auth architecture — authentication lives only at the HTTP boundary',
 
   test('only auth.ts and config read the auth environment variables', () => {
     for (const file of walk(SRC)) {
-      const source = readFileSync(file, 'utf8');
+      // Comments stripped: a comment explaining that a route is protected
+      // when AUTH_ENABLED=true is documentation, not an environment read.
+      const source = code(file);
       const rel = relative(SRC, file).replace(/\\/g, '/');
       if (rel === 'config/index.ts') continue;
       assert.ok(

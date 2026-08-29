@@ -330,6 +330,8 @@ describe('auth — the public path', () => {
       '/api/recovery/rc_1/execute',
       '/api/recovery/rc_1/verify',
       '/api/recovery/rc_1/actions',
+      '/api/recovery/runs',
+      '/api/analytics/recovery',
     ]) {
       assert.equal(isPublicPath(path), false, `${path} must not be public`);
     }

@@ -40,6 +40,9 @@ const PROTECTED_ROUTES: { method: 'GET' | 'POST'; url: string }[] = [
   { method: 'POST', url: '/api/recovery/rc_auth_1/execute' },
   { method: 'POST', url: '/api/recovery/rc_auth_1/verify' },
   { method: 'GET', url: '/api/recovery/rc_auth_1/actions' },
+  // Batch and analytics: added in phase 3, protected by the same hook.
+  { method: 'POST', url: '/api/recovery/runs' },
+  { method: 'GET', url: '/api/analytics/recovery' },
 ];
 
 describe('auth HTTP — enabled', () => {

@@ -4,6 +4,7 @@ import { registerAuth } from './api/auth.ts';
 import { registerHealthRoutes } from './api/health.ts';
 import { registerPaymentRoutes } from './api/payments.ts';
 import { registerRecoveryRoutes } from './api/recovery.ts';
+import { registerAnalyticsRoutes } from './api/analytics.ts';
 import type { AIProvider } from './agents/diagnosis/provider.ts';
 import type { RecoveryProvider } from './payments/provider.ts';
 
@@ -62,6 +63,15 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     ...(options.recoveryProvider === undefined
       ? {}
       : { recoveryProvider: options.recoveryProvider }),
+  });
+  // Batch runs and analytics. Registered after the auth hook like every other
+  // route, so both are protected when AUTH_ENABLED=true.
+  await registerAnalyticsRoutes(app, {
+    ...(options.provider === undefined ? {} : { provider: options.provider }),
+    ...(options.recoveryProvider === undefined
+      ? {}
+      : { recoveryProvider: options.recoveryProvider }),
+    config,
   });
 
   app.setNotFoundHandler((request, reply) => {

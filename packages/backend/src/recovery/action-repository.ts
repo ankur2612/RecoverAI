@@ -310,6 +310,54 @@ export async function recordVerification(
  * Verification targets a completed execution; PENDING/EXECUTING rows have no
  * provider verdict to verify yet.
  */
+/**
+ * Payment ids, from the supplied set, that already have an attempted action.
+ *
+ * "Attempted" means an action row exists in any state other than
+ * SKIPPED_DUPLICATE — i.e. the idempotency key was claimed for that payment,
+ * so a provider request either completed, is in flight, or may have been sent.
+ *
+ * This exists for the batch layer's eligibility check. Per-case idempotency is
+ * already guaranteed by the UNIQUE idempotency key, but a payment whose case
+ * reached a terminal state is no longer "live", so re-analysis would create a
+ * SECOND case with a legitimately different key — and the executor, correctly,
+ * would allow it. Screening those payments out is the batch layer's job; it
+ * must not be solved by weakening the executor.
+ *
+ * WHY EVERY NON-DUPLICATE STATE COUNTS, not just the terminal ones:
+ *
+ *   EXECUTING is the window between claiming the key and hearing back from the
+ *   provider. Migration 002 states it plainly — a row stuck in EXECUTING after
+ *   a crash "is exactly as ambiguous as UNCONFIRMED and must be resolved by
+ *   state verification, never by a blind retry". Treating it as un-attempted
+ *   would let a re-run fork a second case and send a second request for a
+ *   payment that may already have been charged.
+ *
+ *   PENDING means the key is claimed but the provider was not called. Forking
+ *   a second case for it would still produce a duplicate live attempt.
+ *
+ * SKIPPED_DUPLICATE is excluded deliberately: it records that an execution was
+ * refused, never that one happened.
+ *
+ * Returns a Set for O(1) membership, and takes the population as a parameter
+ * so one query covers a whole run.
+ */
+export async function findPaymentsWithCompletedActions(
+  paymentIds: readonly string[],
+  db: Queryable = getPool(),
+): Promise<Set<string>> {
+  if (paymentIds.length === 0) return new Set();
+  const { rows } = await db.query<{ payment_id: string }>(
+    `SELECT DISTINCT rc.payment_id
+     FROM recovery_actions ra
+     JOIN recovery_cases rc ON rc.id = ra.recovery_case_id
+     WHERE rc.payment_id = ANY($1)
+       AND ra.execution_status <> 'SKIPPED_DUPLICATE'`,
+    [paymentIds],
+  );
+  return new Set(rows.map((row) => row.payment_id));
+}
+
 export async function findLatestCompletedAction(
   recoveryCaseId: string,
   db: Queryable = getPool(),
