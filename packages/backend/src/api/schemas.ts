@@ -159,6 +159,30 @@ export const batchRunRequestSchema = z
   })
   .strict();
 
+/**
+ * POST /api/recovery/sweep
+ *
+ * Both fields optional. `.strict()` rejects unknown keys so a typo cannot
+ * silently widen the sweep. There is deliberately NO "retry" or "force" field:
+ * the sweeper resolves by observation and has no execution path to enable.
+ */
+export const sweepRequestSchema = z
+  .object({
+    min_age_seconds: z
+      .number({ invalid_type_error: 'min_age_seconds must be a number' })
+      .int('min_age_seconds must be an integer')
+      .min(0, 'min_age_seconds must not be negative')
+      .max(86_400, 'min_age_seconds must be 86400 or fewer')
+      .optional(),
+    limit: z
+      .number({ invalid_type_error: 'limit must be a number' })
+      .int('limit must be an integer')
+      .min(1, 'limit must be at least 1')
+      .max(1000, 'limit must be 1000 or fewer')
+      .optional(),
+  })
+  .strict();
+
 /** GET /api/analytics/recovery — read-only, so the only filter is merchant. */
 export const analyticsQuerySchema = z
   .object({

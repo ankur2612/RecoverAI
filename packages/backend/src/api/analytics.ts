@@ -6,7 +6,13 @@ import type { AIProvider } from '../agents/diagnosis/provider.ts';
 import type { RecoveryProvider } from '../payments/provider.ts';
 import { runBatchRecovery, type BatchRunSummary } from '../jobs/batch-recovery.ts';
 import { getRecoveryMetrics, type RecoveryMetrics } from '../analytics/recovery-metrics.ts';
-import { analyticsQuerySchema, batchRunRequestSchema, formatZodIssues } from './schemas.ts';
+import { sweepStrandedActions, type SweepRunSummary } from '../recovery/sweep-service.ts';
+import {
+  analyticsQuerySchema,
+  batchRunRequestSchema,
+  sweepRequestSchema,
+  formatZodIssues,
+} from './schemas.ts';
 
 /**
  * Batch recovery and analytics routes.
@@ -56,6 +62,30 @@ function serialiseRun(summary: BatchRunSummary) {
       verification_status: item.verificationStatus,
       amount_at_risk: item.amountAtRisk,
       amount_recovered: item.amountRecovered,
+      message: item.message,
+    })),
+  };
+}
+
+function serialiseSweep(summary: SweepRunSummary) {
+  return {
+    started_at: summary.startedAt.toISOString(),
+    finished_at: summary.finishedAt.toISOString(),
+    found: summary.found,
+    resolved_success: summary.resolvedSuccess,
+    resolved_failed: summary.resolvedFailed,
+    still_unconfirmed: summary.stillUnconfirmed,
+    already_resolved: summary.alreadyResolved,
+    failed: summary.failed,
+    items: summary.items.map((item) => ({
+      action_id: item.actionId,
+      payment_id: item.paymentId,
+      case_id: item.caseId,
+      stranded_in: item.strandedIn,
+      outcome: item.outcome,
+      observed_state: item.observedState,
+      execution_status: item.executionStatus,
+      verification_status: item.verificationStatus,
       message: item.message,
     })),
   };
@@ -127,6 +157,40 @@ export async function registerAnalyticsRoutes(
     );
 
     return reply.code(200).send(serialiseRun(summary));
+  });
+
+  /**
+   * POST /api/recovery/sweep
+   *
+   * CRASH RECOVERY. Resolves actions stranded in PENDING/EXECUTING by asking
+   * the provider what actually happened.
+   *
+   * This endpoint CANNOT execute anything. It delegates to the sweep service,
+   * which reaches the provider only through getPaymentStatus — a read — and
+   * has no import path to the executor. A stranded action whose outcome cannot
+   * be determined stays UNCONFIRMED and is never retried.
+   */
+  app.post('/api/recovery/sweep', async (request, reply) => {
+    const parsed = sweepRequestSchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      return reply.code(400).send({
+        error: 'validation_error',
+        message: 'The sweep request is invalid.',
+        issues: formatZodIssues(parsed.error),
+      });
+    }
+
+    const summary = await sweepStrandedActions(
+      {
+        ...(parsed.data.min_age_seconds === undefined
+          ? {}
+          : { minAgeSeconds: parsed.data.min_age_seconds }),
+        ...(parsed.data.limit === undefined ? {} : { limit: parsed.data.limit }),
+      },
+      { provider: recoveryProvider },
+    );
+
+    return reply.code(200).send(serialiseSweep(summary));
   });
 
   /**

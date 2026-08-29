@@ -243,6 +243,81 @@ export async function completeAction(
   return rowToAction(rows[0]!);
 }
 
+/** An action stranded mid-flight, with the payment it belongs to. */
+export interface StrandedAction {
+  action: RecoveryAction;
+  paymentId: string;
+}
+
+/**
+ * Actions stranded in a non-terminal state, oldest first.
+ *
+ * PENDING and EXECUTING are the two states a crash can leave behind:
+ *
+ *   PENDING    the idempotency key was claimed, the provider was NOT called
+ *   EXECUTING  the request was in flight; the provider MAY have acted
+ *
+ * `olderThanSeconds` excludes rows belonging to executions that are still
+ * legitimately running. Without it a sweeper racing a healthy executor could
+ * observe a payment mid-flight and record a verdict the executor is about to
+ * overwrite.
+ *
+ * This is a READ. Nothing here decides an outcome.
+ */
+export async function findStrandedActions(
+  options: { olderThanSeconds: number; limit: number },
+  db: Queryable = getPool(),
+): Promise<StrandedAction[]> {
+  const { rows } = await db.query<ActionRow & { payment_id: string }>(
+    `SELECT ${ACTION_COLUMNS.split(',').map((c) => `ra.${c.trim()}`).join(', ')},
+            rc.payment_id
+     FROM recovery_actions ra
+     JOIN recovery_cases rc ON rc.id = ra.recovery_case_id
+     WHERE ra.execution_status IN ('PENDING', 'EXECUTING')
+       AND ra.created_at < now() - make_interval(secs => $1)
+     ORDER BY ra.created_at ASC
+     LIMIT $2`,
+    [options.olderThanSeconds, options.limit],
+  );
+  return rows.map((row) => ({ action: rowToAction(row), paymentId: row.payment_id }));
+}
+
+/**
+ * Record a resolution against a STRANDED action only.
+ *
+ * Differs from completeAction in one load-bearing way: the WHERE clause pins
+ * the current state to PENDING/EXECUTING. completeAction has no such guard, so
+ * a sweeper using it could overwrite a terminal verdict that a recovering
+ * executor had just written — turning a settled SUCCESS back into something
+ * else, or double-resolving one action from two concurrent sweepers.
+ *
+ * Returns null when the row is no longer stranded, which is the signal that
+ * someone else resolved it first. That makes the operation naturally
+ * idempotent under concurrency: the database, not the caller, picks the winner.
+ */
+export async function resolveStrandedAction(
+  args: {
+    id: string;
+    executionStatus: Extract<ExecutionStatus, 'SUCCESS' | 'FAILED' | 'UNCONFIRMED'>;
+    providerReference: string | null;
+    errorMessage: string | null;
+  },
+  db: Queryable = getPool(),
+): Promise<RecoveryAction | null> {
+  const { rows } = await db.query<ActionRow>(
+    `UPDATE recovery_actions
+     SET execution_status = $2,
+         provider_reference = COALESCE($3, provider_reference),
+         error_message = $4,
+         completed_at = now()
+     WHERE id = $1
+       AND execution_status IN ('PENDING', 'EXECUTING')
+     RETURNING ${ACTION_COLUMNS}`,
+    [args.id, args.executionStatus, args.providerReference, args.errorMessage],
+  );
+  return rows.length === 0 ? null : rowToAction(rows[0]!);
+}
+
 export async function listActionsForCase(
   recoveryCaseId: string,
   db: Queryable = getPool(),
