@@ -65,6 +65,20 @@ export interface AuthConfig {
   token: string | undefined;
 }
 
+/**
+ * HTTP rate limiting.
+ *
+ * Bounds how many requests one client may make per window. This is a brute
+ * force guard, not authorization: it can only refuse, never permit.
+ */
+export interface RateLimitConfig {
+  enabled: boolean;
+  /** Maximum requests per window, per client IP. */
+  max: number;
+  /** Window length in milliseconds. */
+  windowMs: number;
+}
+
 export interface AppConfig {
   nodeEnv: string;
   port: number;
@@ -85,6 +99,7 @@ export interface AppConfig {
     razorpayKeySecret: string | undefined;
   };
   auth: AuthConfig;
+  rateLimit: RateLimitConfig;
   policy: PolicyConfig;
   dataset: DatasetConfig;
   demo: {
@@ -245,6 +260,32 @@ export function loadConfig(env: Env = process.env): AppConfig {
     );
   }
 
+  // -- production must not inherit development defaults -------------------
+  //
+  // A development default is a convenience; silently applying it in
+  // production is a fault. A container whose DATABASE_URL is unset or
+  // misspelled would otherwise start happily and point at a localhost
+  // database that does not exist inside the container.
+  //
+  // Checked only when NODE_ENV=production, so local development and the test
+  // suites keep their existing zero-configuration behaviour.
+  const nodeEnv = readString(env, 'NODE_ENV', 'development');
+  if (nodeEnv === 'production' && readOptional(env, 'DATABASE_URL') === undefined) {
+    throw new ConfigError(
+      'NODE_ENV=production requires DATABASE_URL to be set explicitly. RecoverAI will not ' +
+        'fall back to the development database URL in production.',
+    );
+  }
+
+  // Defaults chosen to be generous for an operator dashboard and a batch run
+  // while still bounding a brute-force attempt: 120/min is far more than any
+  // human workflow needs and far less than a credential-guessing loop wants.
+  const rateLimit: RateLimitConfig = {
+    enabled: readBool(env, 'RATE_LIMIT_ENABLED', true),
+    max: readInt(env, 'RATE_LIMIT_MAX', 120, 1, 100_000),
+    windowMs: readInt(env, 'RATE_LIMIT_WINDOW_MS', 60_000, 100, 3_600_000),
+  };
+
   const policy: PolicyConfig = {
     maxRetryAttempts: readInt(env, 'POLICY_MAX_RETRY_ATTEMPTS', 3, 0, 10),
     maxAutomatedAmount: readInt(env, 'POLICY_MAX_AUTOMATED_AMOUNT', 1_000_000, 0, 1_000_000_000),
@@ -264,7 +305,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
   };
 
   return {
-    nodeEnv: readString(env, 'NODE_ENV', 'development'),
+    nodeEnv,
     port: readInt(env, 'PORT', 8080, 1, 65_535),
     logLevel: readString(env, 'LOG_LEVEL', 'info'),
     databaseUrl: readString(
@@ -292,6 +333,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
       // environment of an open deployment is not retained in memory.
       token: authEnabled ? authToken : undefined,
     },
+    rateLimit,
     policy,
     dataset,
     demo: {
@@ -336,6 +378,8 @@ export function redactedConfig(config: AppConfig) {
       // response, a log line, or a serialized config dump.
       credentialPresent: config.auth.token !== undefined,
     },
+    // Limits are operational settings, not secrets.
+    rateLimit: config.rateLimit,
     policy: config.policy,
     dataset: config.dataset,
   };

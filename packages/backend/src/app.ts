@@ -1,6 +1,7 @@
 import Fastify, { type FastifyInstance, type FastifyError } from 'fastify';
 import { loadConfig, type AppConfig } from './config/index.ts';
 import { registerAuth } from './api/auth.ts';
+import { registerRateLimit } from './api/rate-limit.ts';
 import { registerHealthRoutes } from './api/health.ts';
 import { registerPaymentRoutes } from './api/payments.ts';
 import { registerRecoveryRoutes } from './api/recovery.ts';
@@ -50,6 +51,11 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     // Never echo an unbounded request body back to the client on error.
     bodyLimit: 1_048_576,
   });
+
+  // Rate limiting BEFORE authentication, so a flood of credential guesses is
+  // throttled without each one reaching the token comparison. Both are
+  // onRequest hooks and Fastify runs them in registration order.
+  await registerRateLimit(app, config);
 
   // Registered BEFORE any route. An onRequest hook added here applies to every
   // route registered afterwards, so no handler can run for a request that

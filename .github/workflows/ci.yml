@@ -1,0 +1,127 @@
+name: CI
+
+# Runs on every pull request and on pushes to main. Nothing here needs a
+# credential: the whole pipeline exercises the mock providers.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Cancel an in-flight run when a branch is pushed again — the older result is
+# already stale by then.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Fast feedback: no database, no network, no credentials.
+  # ---------------------------------------------------------------------------
+  verify:
+    name: lint · typecheck · build · offline tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Matches the repository's engines field (>=20.10) and the version
+          # the --experimental-strip-types scripts are developed against.
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      # RECOVERAI_TEST_DATABASE_URL is deliberately unset here, so the
+      # integration suites skip and this job stays fast.
+      - name: Offline tests
+        run: npm test
+
+  # ---------------------------------------------------------------------------
+  # The same suite against a real PostgreSQL, which is where idempotency,
+  # concurrency, and the append-only audit triggers are actually exercised.
+  # ---------------------------------------------------------------------------
+  database-tests:
+    name: DB-backed tests
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: recoverai_test
+          # A throwaway credential for an ephemeral CI container that is
+          # destroyed with the job. It is not a secret and is not reused.
+          POSTGRES_PASSWORD: recoverai_test_ci
+          POSTGRES_DB: recoverai_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U recoverai_test -d recoverai_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: DB-backed tests
+        env:
+          RECOVERAI_TEST_DATABASE_URL: postgres://recoverai_test:recoverai_test_ci@localhost:5432/recoverai_test
+          # Explicitly OFF. The live provider suites must never run in ordinary
+          # CI: they cost real quota and contact real third parties.
+          RECOVERAI_LIVE_PROVIDER_TESTS: '0'
+        run: npm test
+
+  # ---------------------------------------------------------------------------
+  # A guard, not a feature: prove CI cannot silently acquire live credentials.
+  # ---------------------------------------------------------------------------
+  no-live-credentials:
+    name: live provider tests stay gated
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Looks for a credential being SET (`NAME: value`) or injected from
+      # secrets, rather than merely named. Without that distinction this check
+      # would match its own pattern and fail on itself.
+      - name: Assert no workflow injects a provider credential
+        run: |
+          if grep -nE '^[[:space:]]+(GEMINI_API_KEY|RAZORPAY_KEY_ID|RAZORPAY_KEY_SECRET|ANTHROPIC_API_KEY|OPENAI_API_KEY):' .github/workflows/*.yml; then
+            echo "::error::A workflow sets a live provider credential."
+            exit 1
+          fi
+          if grep -nE 'secrets\.(GEMINI|RAZORPAY|ANTHROPIC|OPENAI)' .github/workflows/*.yml; then
+            echo "::error::A workflow injects a live provider secret."
+            exit 1
+          fi
+          echo "No live provider credentials are injected. ✓"
+
+      - name: Assert live provider tests are opt-in
+        run: |
+          if ! grep -q "RECOVERAI_LIVE_PROVIDER_TESTS" packages/backend/tests/live-provider-smoke.test.ts; then
+            echo "::error::The live smoke test is no longer gated behind RECOVERAI_LIVE_PROVIDER_TESTS."
+            exit 1
+          fi
+          echo "Live provider tests remain gated. ✓"

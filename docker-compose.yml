@@ -31,6 +31,19 @@ services:
       PORT: 8080
       # Inside the compose network the database is reachable by service name.
       DATABASE_URL: postgres://recoverai:recoverai@db:5432/recoverai
+      # AUTHENTICATION IS FAIL-CLOSED HERE.
+      #
+      # Defaults to true, so a production container cannot start unprotected
+      # merely because someone forgot to set it. Overriding it to false is
+      # possible but must be typed deliberately.
+      AUTH_ENABLED: ${AUTH_ENABLED:-true}
+      # The `:?` form makes compose REFUSE TO START when the variable is unset
+      # or empty, with the message shown. No token is defaulted here: a
+      # committed default would be a published credential.
+      #
+      # loadConfig() then applies its own checks (non-empty, >= 16 chars), so
+      # a too-short token also prevents startup.
+      API_AUTH_TOKEN: ${API_AUTH_TOKEN:?set API_AUTH_TOKEN in .env (min 16 chars); the API refuses to start unprotected}
     # Secrets come from a local .env file, which is gitignored. Compose
     # tolerates the file being absent, so mock-mode runs need no setup.
     env_file:

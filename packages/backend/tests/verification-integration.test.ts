@@ -293,13 +293,14 @@ describe('outcome verification — live database', { skip }, () => {
 
     test('a VERIFIED outcome refreshes the stale payment record', async () => {
       await seedCase('rc_vr_refresh', 'pay_vr_refresh');
-      const before = await findPaymentById('pay_vr_refresh');
-      assert.equal(before!.status, 'failed');
+      // Named to avoid shadowing node:test's `before`/`after` hooks.
+      const beforeVerify = await findPaymentById('pay_vr_refresh');
+      assert.equal(beforeVerify!.status, 'failed');
 
       await executeThenVerify('rc_vr_refresh', 'SUCCESS', 'SUCCEEDED');
 
-      const after = await findPaymentById('pay_vr_refresh');
-      assert.equal(after!.status, 'captured', 'verified evidence should refresh the record');
+      const afterVerify = await findPaymentById('pay_vr_refresh');
+      assert.equal(afterVerify!.status, 'captured', 'verified evidence should refresh the record');
     });
 
     test('evidence contains no secrets', async () => {

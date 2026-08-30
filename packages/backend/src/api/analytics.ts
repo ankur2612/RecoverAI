@@ -156,6 +156,28 @@ export async function registerAnalyticsRoutes(
       { provider, recoveryProvider, config },
     );
 
+    // Run summary, logged at the HTTP boundary rather than inside the batch
+    // service — that service is deliberately free of a logger dependency, and
+    // its architecture tests enforce it. Counts and totals only: no payment
+    // ids, no credentials, no provider payloads.
+    request.log.info(
+      {
+        event: 'batch_run_completed',
+        runId: summary.runId,
+        totalEligible: summary.totalEligible,
+        analyzed: summary.analyzed,
+        executed: summary.executed,
+        recovered: summary.recovered,
+        skippedDuplicate: summary.skippedDuplicate,
+        failed: summary.failed,
+        // Minor units, matching every other money field in the API.
+        amountAtRiskMinor: summary.amountAtRisk,
+        amountRecoveredMinor: summary.amountRecovered,
+        durationMs: summary.finishedAt.getTime() - summary.startedAt.getTime(),
+      },
+      'batch recovery run completed',
+    );
+
     return reply.code(200).send(serialiseRun(summary));
   });
 
@@ -188,6 +210,22 @@ export async function registerAnalyticsRoutes(
         ...(parsed.data.limit === undefined ? {} : { limit: parsed.data.limit }),
       },
       { provider: recoveryProvider },
+    );
+
+    // Sweep summary. `stillUnconfirmed` is the number an operator most needs
+    // to see: those actions remain genuinely ambiguous and are never retried.
+    request.log.info(
+      {
+        event: 'sweep_completed',
+        found: summary.found,
+        resolvedSuccess: summary.resolvedSuccess,
+        resolvedFailed: summary.resolvedFailed,
+        stillUnconfirmed: summary.stillUnconfirmed,
+        alreadyResolved: summary.alreadyResolved,
+        failed: summary.failed,
+        durationMs: summary.finishedAt.getTime() - summary.startedAt.getTime(),
+      },
+      'stranded action sweep completed',
     );
 
     return reply.code(200).send(serialiseSweep(summary));

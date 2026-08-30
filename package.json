@@ -2,7 +2,7 @@
   "name": "recoverai",
   "version": "0.1.0",
   "private": true,
-  "description": "RecoverAI \u2014 AI revenue recovery agent (Razorpay AI Buildathon, Track 03)",
+  "description": "RecoverAI — AI revenue recovery agent (Razorpay AI Buildathon, Track 03)",
   "workspaces": [
     "packages/*"
   ],
@@ -16,9 +16,16 @@
     "dev": "npm run dev --workspace @recoverai/backend",
     "migrate": "npm run migrate --workspace @recoverai/backend",
     "evaluate": "npm run evaluate --workspace @recoverai/backend",
+    "lint": "eslint . --config eslint.config.mjs",
+    "lint:fix": "eslint . --config eslint.config.mjs --fix",
     "seed": "npm run seed --workspace @recoverai/backend",
     "db:up": "docker compose up -d db",
     "db:down": "docker compose down",
     "test:db": "npm run test:db --workspace @recoverai/backend"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "eslint": "^9.39.5",
+    "typescript-eslint": "^8.68.0"
   }
 }

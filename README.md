@@ -37,9 +37,14 @@ and does not work yet.
 | **Outcome verification (evidence)** | **Working** |
 | **Gemini AI provider** | **Working, live-verified** |
 | **Razorpay Test Mode provider** | **Working, mock-tested; live lookup unproven** |
-| Approval workflow, analytics API, dashboard | **Not built yet** |
-| API authentication | **Working** — static token, off by default |
-| CI, lint | **Not built yet** |
+| **Batch recovery + analytics API** | **Working** |
+| **Crash recovery sweeper** | **Working** |
+| **Human approval workflow** | **Working** |
+| **AI evaluation harness** | **Working** |
+| API authentication | **Working** — shared token; enabled by default in Docker |
+| Rate limiting | **Working** — in-process, per client IP |
+| CI (GitHub Actions), lint (ESLint) | **Working** |
+| Dashboard / frontend | **Not built yet** |
 
 ---
 
@@ -102,7 +107,7 @@ curl http://localhost:8080/api/health
 ### Tests
 
 ```bash
-npm test            # 571 offline tests (no database, no credentials)
+npm test            # offline tests (no database, no credentials)
 npm run typecheck
 npm run build
 ```
@@ -114,7 +119,7 @@ runnable on a machine with no PostgreSQL:
 
 ```bash
 RECOVERAI_TEST_DATABASE_URL=postgres://user:pass@host:port/db npm test
-# 663 tests (adds 92 live-database integration tests)
+# adds the live-database integration suites
 ```
 
 ---
@@ -197,10 +202,10 @@ packages/backend/src/
 │                 verify-service.ts, verification-types.ts,
 │                 repository.ts, action-repository.ts
 ├── audit/        append-only audit writes
-├── analytics/    metrics + evaluation                   (empty — next phase)
+├── analytics/    recovery metrics, evaluation harness, metrics primitives
 ├── datasets/     synthetic data generator
 ├── db/           pool, type parsers, migrations, runner
-├── jobs/         batch processing                       (empty — next phase)
+├── jobs/         batch recovery orchestration, sweeper CLI
 ├── config/       env loading, policy values, redaction
 └── shared/       domain types, seeded RNG
 ```
@@ -247,7 +252,10 @@ Every value lives in the environment; see [.env.example](.env.example).
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `AUTH_ENABLED` | `false` | `true` \| `false` \| `1` \| `0` — protects every route except health |
+| `AUTH_ENABLED` | `false` locally, **`true` in Docker** | `true` \| `false` \| `1` \| `0` — protects every route except health |
+| `RATE_LIMIT_ENABLED` | `true` | Bounds requests per client IP |
+| `RATE_LIMIT_MAX` | `120` | Requests per window, per client |
+| `RATE_LIMIT_WINDOW_MS` | `60000` | Window length in milliseconds |
 | `API_AUTH_TOKEN` | *(unset)* | **Required when `AUTH_ENABLED=true`**; min 16 chars. Never logged or returned |
 | `AI_PROVIDER` | `mock` | `mock` \| `gemini` \| `claude` \| `openai` |
 | `GEMINI_API_KEY` | *(unset)* | Required when `AI_PROVIDER=gemini` |
@@ -318,7 +326,11 @@ landing entirely in dev by chance.
 | `POST /api/recovery/:caseId/execute` | Working — **the only endpoint that acts** |
 | `POST /api/recovery/:caseId/verify` | Working — **establishes the outcome** |
 | `GET /api/recovery/:caseId/actions` | Working |
-| approval endpoints in PRD §25 | Not built yet |
+| `POST /api/recovery/:caseId/approve` | Working — **records a human decision; executes nothing** |
+| `POST /api/recovery/:caseId/reject` | Working — terminal for that case |
+| `POST /api/recovery/runs` | Working — batch run over a population |
+| `POST /api/recovery/sweep` | Working — resolves stranded actions by observation |
+| `GET /api/analytics/recovery` | Working — VERIFIED-only recovered revenue |
 
 `/api/health` returns `200` when the database is reachable and `503` when it is
 not, with the failure reason included and all credentials redacted.
@@ -548,7 +560,7 @@ Three tiers. **Only the third makes network calls, and it is opt-in.**
 npm test
 ```
 
-571 tests. Uses hardcoded fake credentials; reads no `.env`.
+Offline tests use hardcoded fake credentials and read no `.env`.
 
 ### 2. Database-backed tests
 
@@ -558,7 +570,7 @@ Point at a disposable PostgreSQL — never a database you care about:
 RECOVERAI_TEST_DATABASE_URL=postgres://user:pass@localhost:5432/recoverai_test npm test
 ```
 
-663 tests (adds 92 live-database integration tests). Migrations run
+Adds the live-database integration suites. Migrations run
 automatically; fixtures clean up after themselves.
 
 ### 3. Gated live provider smoke tests
@@ -949,19 +961,23 @@ Built (P0 1–5, 9 partial):
 - [x] **Razorpay Test Mode provider** — implemented, unit-tested, credential
       guards live-verified
 
+- [x] **API authentication** — shared token, timing-safe, health stays public
+- [x] **Batch recovery + analytics** — population-level runs, aggregate metrics
+- [x] **Crash recovery sweeper** — resolves stranded actions by observation,
+      never by a blind retry
+- [x] **Human approval workflow** — approval satisfies policy gates only, never
+      a failure rule
+- [x] **Evaluation harness** — precision/recall/F1 against
+      `payment_ground_truth`, ground truth never reaching the model
+- [x] **CI (GitHub Actions), ESLint, rate limiting, fail-closed Docker auth**
+
 Not built yet, in rough priority order:
 
-- [x] **API authentication** — static token, timing-safe, health stays public
-- [ ] **Crash recovery** — nothing resolves actions stranded in `EXECUTING` or
-      `UNCONFIRMED` after a process restart
-- [ ] **Manual approval workflow** — policy emits `REQUIRES_APPROVAL`, but
-      nothing can grant it, so those cases currently dead-end
-- [ ] **Analytics / batch metrics API** — the data is persisted and queryable,
-      but no endpoint aggregates it
 - [ ] **Dashboard** — no frontend package exists
-- [ ] **CI/CD** and **lint** — neither is configured
-- [ ] **Evaluation harness** — no precision/recall/F1 against
-      `payment_ground_truth`
+- [ ] **Per-user identity, roles, and token rotation** — authentication is a
+      single shared token; see limitation 13
+- [ ] **Distributed rate limiting** — the current limiter is in-process
+- [ ] **Metrics/tracing export** — structured logs only, no OpenTelemetry
 
 ---
 
@@ -1044,11 +1060,30 @@ Stated plainly, because the PRD asks for honest reporting:
    the PATH that npm hands to `cmd.exe`, even when it is available in your
    shell. Running `node --experimental-strip-types --test "tests/**/*.test.ts"`
    directly works regardless.
-13. **Authentication is a single shared token.** There are no per-user
-    identities, roles, scopes, rotation, or rate limiting, and `AUTH_ENABLED`
-    defaults to `false`. A production deployment must set it to `true`. Note
-    that authentication is not authorization: it controls who may call the
-    API, never which recovery actions are permitted.
+13. **Authentication is a single shared token — there is no user-level
+    accountability.** Everyone who holds the token is indistinguishable to the
+    system. Concretely:
+
+    - **No individual operator identity.** An approval is recorded against
+      `api:authenticated-operator`, which is a *service* identity, not a
+      person. The audit trail can prove *that* a decision was made and when;
+      it cannot prove *who* made it. The `actor` column exists so a real
+      identity system can slot in without a schema change.
+    - **No roles or scopes.** Any valid token can approve a ₹25,000 recovery,
+      trigger a batch run, and read every analytic. There is no separation of
+      duties.
+    - **No rotation mechanism.** Rotating the token is an operational task:
+      set a new `API_AUTH_TOKEN` and restart. There is no overlap window, so
+      rotation is a brief outage for API clients.
+    - **Rate limiting exists** (`RATE_LIMIT_*`) and bounds brute-force
+      guessing, but it is in-process — N replicas permit N times the limit. A
+      real deployment should also limit at the reverse proxy.
+
+    `AUTH_ENABLED` defaults to `false` locally so the test suites and local
+    development need no configuration; **Docker Compose defaults it to `true`
+    and refuses to start without a token.** Note that authentication is not
+    authorization: it controls who may call the API, never which recovery
+    actions are permitted — that stays with the policy engine.
 
 ---
 

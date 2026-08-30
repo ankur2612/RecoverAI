@@ -32,7 +32,7 @@ export class MockAIProvider implements AIProvider {
   readonly name = 'mock';
   readonly model = 'deterministic';
 
-  // eslint-disable-next-line @typescript-eslint/require-await -- interface is async for real providers
+  // The interface is async because real providers are; MockAI is synchronous.
   async diagnose(input: DiagnosisInput): Promise<DiagnosisResult> {
     const raw = this.buildDiagnosis(input);
     // Deliberately routed through the same validator a real provider uses, so
