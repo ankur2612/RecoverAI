@@ -159,9 +159,11 @@ describe('migrations — safety constraints', () => {
   test('only one live recovery case per payment', () => {
     assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS recovery_cases_one_open_per_payment/);
 
-    // Check the LATEST definition: 003 redefines the index to include
-    // AWAITING_VERIFICATION, since an executed-but-unverified case still has
-    // an action outstanding and must block a competing case.
+    // Check the LATEST definition. 003 added AWAITING_VERIFICATION (an
+    // executed-but-unverified case still has an action outstanding), and 004
+    // added APPROVED (a human said yes and execution is pending, so a second
+    // competing case must not be openable). REJECTED is deliberately ABSENT:
+    // it is terminal, so a rejected case must not block a fresh analysis.
     const definitions = [
       ...sql.matchAll(
         /CREATE UNIQUE INDEX IF NOT EXISTS recovery_cases_one_open_per_payment[\s\S]*?WHERE status IN \(([^)]*)\)/g,
@@ -170,11 +172,14 @@ describe('migrations — safety constraints', () => {
     const latest = definitions.at(-1)![1]!;
     const statuses = [...latest.matchAll(/'([A-Z_]+)'/g)].map((m) => m[1]!).sort();
     assert.deepEqual(statuses, [
+      'APPROVED',
       'AWAITING_APPROVAL',
       'AWAITING_VERIFICATION',
       'EXECUTING',
       'OPEN',
     ]);
+    // A rejected case is terminal and must never occupy the live slot.
+    assert.ok(!statuses.includes('REJECTED'), 'REJECTED blocks a fresh case');
   });
 
   test('confidence and score columns are bounded to [0, 1]', () => {

@@ -107,6 +107,11 @@ export type ExecutionStatus = (typeof EXECUTION_STATUSES)[number];
 export const RECOVERY_CASE_STATUSES = [
   'OPEN',
   'AWAITING_APPROVAL',
+  // A human said yes. Deliberately NOT an authorization state: policy still
+  // re-evaluates every rule at execution time and can still refuse.
+  'APPROVED',
+  // A human said no. Terminal for this case.
+  'REJECTED',
   'EXECUTING',
   'AWAITING_VERIFICATION',
   'RECOVERED',

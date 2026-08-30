@@ -133,8 +133,10 @@ describe('crash recovery — live database', { skip }, () => {
       const summary = await sweepStrandedActions(SWEEP_NOW, { provider });
 
       assert.equal(provider.callCount, executesBefore, 'the sweeper RE-EXECUTED the action');
-      assert.equal(summary.found, 1);
-      assert.equal(summary.resolvedSuccess, 1);
+      // Scoped to this action: the sweeper is global and other suites may run
+      // in parallel, so a global `found` count is not this test's business.
+      assert.equal(summary.items.filter((i) => i.actionId === actionId).length, 1);
+      assert.ok(summary.resolvedSuccess >= 1);
       const action = await findActionById(actionId);
       assert.equal(action!.executionStatus, 'SUCCESS');
       assert.equal(summary.items[0]!.observedState, 'SUCCEEDED');
@@ -290,11 +292,18 @@ describe('crash recovery — live database', { skip }, () => {
       const third = await sweepStrandedActions(SWEEP_NOW, { provider });
 
       assert.equal(provider.callCount, executesBefore, 'a repeated sweep executed something');
-      assert.equal(first.found, 1);
-      // Once resolved, the action is no longer stranded, so later passes find
-      // nothing — the sweep is naturally self-limiting.
-      assert.equal(second.found, 0);
-      assert.equal(third.found, 0);
+
+      // Scoped to THIS action rather than to global counts: node runs test
+      // files in parallel and the sweeper is deliberately global, so another
+      // suite's stranded rows can legitimately appear in `found`.
+      const mine = (summary: { items: { actionId: string }[] }) =>
+        summary.items.filter((i) => i.actionId === actionId);
+
+      assert.equal(mine(first).length, 1, 'the first sweep did not resolve this action');
+      // Once resolved it is no longer stranded, so later passes skip it — the
+      // sweep is naturally self-limiting.
+      assert.equal(mine(second).length, 0, 'a resolved action was swept again');
+      assert.equal(mine(third).length, 0, 'a resolved action was swept again');
       assert.equal((await findActionById(actionId))!.executionStatus, 'SUCCESS');
     });
 
@@ -336,7 +345,11 @@ describe('crash recovery — live database', { skip }, () => {
 
       const summary = await sweepStrandedActions(SWEEP_NOW, { provider });
 
-      assert.equal(summary.found, 0, 'the sweeper picked up a completed action');
+      assert.equal(
+        summary.items.filter((i) => i.paymentId === 'pay_sw_healthy').length,
+        0,
+        'the sweeper picked up a completed action',
+      );
       assert.equal(provider.callCount, executesBefore);
     });
 
@@ -347,7 +360,11 @@ describe('crash recovery — live database', { skip }, () => {
 
       const summary = await sweepStrandedActions({ minAgeSeconds: 3600, limit: 100 }, { provider });
 
-      assert.equal(summary.found, 0, 'a freshly stranded action was swept');
+      assert.equal(
+        summary.items.filter((i) => i.paymentId === 'pay_sw_young').length,
+        0,
+        'a freshly stranded action was swept',
+      );
     });
   });
 
@@ -426,8 +443,11 @@ describe('crash recovery — live database', { skip }, () => {
       const summary = await sweepStrandedActions(SWEEP_NOW, {
         provider: new MockRecoveryProvider(),
       });
-      assert.equal(summary.found, 0);
-      assert.deepEqual(summary.items, []);
+      assert.equal(
+        summary.items.filter((i) => i.paymentId.startsWith('pay_sw_')).length,
+        0,
+        'a sweep with no fixtures resolved one of ours',
+      );
       assert.equal(summary.failed, 0);
     });
 
@@ -449,13 +469,21 @@ describe('crash recovery — live database', { skip }, () => {
 
       const summary = await sweepStrandedActions(SWEEP_NOW, { provider });
 
-      assert.equal(summary.found, 3, 'the sweep aborted early');
-      assert.equal(summary.items.length, 3, 'not every action produced an item');
+      const mine = summary.items.filter((i) => i.paymentId.startsWith('pay_sw_multi_'));
+      assert.equal(mine.length, 3, 'the sweep aborted early or skipped an action');
       assert.equal(provider.callCount, executesBefore, 'the sweep executed something');
       // The failing lookup is caught inside resolveOne as UNKNOWN ->
       // UNCONFIRMED, which is the safe outcome; the other two still resolve.
-      assert.equal(summary.stillUnconfirmed, 1, 'the failed lookup was not left unconfirmed');
-      assert.equal(summary.resolvedSuccess, 2, 'the healthy actions did not resolve');
+      assert.equal(
+        mine.filter((i) => i.outcome === 'STILL_UNCONFIRMED').length,
+        1,
+        'the failed lookup was not left unconfirmed',
+      );
+      assert.equal(
+        mine.filter((i) => i.outcome === 'RESOLVED_SUCCESS').length,
+        2,
+        'the healthy actions did not resolve',
+      );
     });
   });
 });

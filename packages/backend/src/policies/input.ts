@@ -28,6 +28,13 @@ export interface BuildPolicyInputArgs {
   secondsSinceLastAttempt?: number | null;
   /** Additional human-review flag from the diagnosis layer. */
   humanReviewRequested?: boolean;
+  /**
+   * Whether a persisted APPROVED decision exists for this case.
+   *
+   * Defaults to FALSE. An omitted flag must never read as "approved" — every
+   * existing caller keeps its current, un-approved behaviour.
+   */
+  humanApprovalGranted?: boolean;
 }
 
 export function buildPolicyInput(args: BuildPolicyInputArgs): PolicyInput {
@@ -51,5 +58,7 @@ export function buildPolicyInput(args: BuildPolicyInputArgs): PolicyInput {
     // The detector's own review flag is folded in, so a policy decision cannot
     // be more permissive than the deterministic assessment that preceded it.
     humanReviewRequested: args.humanReviewRequested ?? assessment.requiresHumanReview,
+    // Fail closed: absent means not approved.
+    humanApprovalGranted: args.humanApprovalGranted ?? false,
   };
 }

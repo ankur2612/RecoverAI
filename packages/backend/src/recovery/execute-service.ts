@@ -9,6 +9,7 @@ import { getCustomerHistory } from '../payments/repository.ts';
 import type { RecoveryProvider } from '../payments/provider.ts';
 import { findCaseById, updateCaseStatus, type RecoveryCase } from './repository.ts';
 import { findActionByIdempotencyKey } from './action-repository.ts';
+import { findDecisionForCase } from './approval-repository.ts';
 import {
   buildIdempotencyKey,
   executeRecoveryAction,
@@ -107,6 +108,31 @@ export async function executeRecoveryCase(
 
   const existing = await findActionByIdempotencyKey(idempotencyKey);
 
+  // ---- The human decision, read fresh at execution time -------------------
+  //
+  // A REJECTED case is terminal: it must never execute, whatever policy would
+  // otherwise say. Checked before authorization so a rejection cannot be
+  // overtaken by a later change in policy configuration.
+  const decision = await findDecisionForCase(recoveryCase.id);
+  if (decision !== null && decision.decision === 'REJECTED') {
+    return {
+      execution: null,
+      failure: 'CASE_NOT_ACTIONABLE',
+      recoveryCase,
+      policyDecision: null,
+      idempotencyKey: null,
+      message: `Case ${caseId} was rejected by ${decision.actor} and cannot be executed.`,
+    };
+  }
+
+  // An approval decision covers the action it was granted for. If the case has
+  // since been re-analysed into a different recommendation, the old approval
+  // does not carry over.
+  const approvalGranted =
+    decision !== null &&
+    decision.decision === 'APPROVED' &&
+    decision.approvedAction === recoveryCase.recommendedAction;
+
   const policy = evaluatePolicy(
     buildPolicyInput({
       payment,
@@ -116,6 +142,10 @@ export async function executeRecoveryCase(
       // Now a real value: a prior action for this logical key means duplicate.
       duplicateActionExists: existing !== null,
       humanReviewRequested: assessment.requiresHumanReview,
+      // Satisfies APPROVAL GATES ONLY. Every failure rule — retry ceiling,
+      // cooldown, duplicate action, already recovered — is computed
+      // independently and still denies an approved case.
+      humanApprovalGranted: approvalGranted,
     }),
     config.policy,
   );

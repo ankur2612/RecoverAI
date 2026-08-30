@@ -3,6 +3,7 @@ import {
   CURRENCIES,
   FAILURE_REASONS,
   PAYMENT_STATUSES,
+  RECOVERY_ACTIONS,
   RECOVERY_CASE_STATUSES,
 } from '../shared/types.ts';
 
@@ -179,6 +180,38 @@ export const sweepRequestSchema = z
       .int('limit must be an integer')
       .min(1, 'limit must be at least 1')
       .max(1000, 'limit must be 1000 or fewer')
+      .optional(),
+  })
+  .strict();
+
+/**
+ * POST /api/recovery/:caseId/approve  and  /reject
+ *
+ * Deliberately MINIMAL. The client may supply a justification and, optionally,
+ * the action it believes it is deciding on. It may NOT supply:
+ *
+ *   - an amount            (would let a caller restate the money at stake)
+ *   - an arbitrary action  (would let an approval apply to a different action)
+ *   - authorized: true     (authorization is the policy engine's, never a
+ *                           client's, and no field here can grant it)
+ *   - force / override     (there is no bypass to enable)
+ *
+ * `.strict()` rejects unknown keys, so any of the above fails loudly rather
+ * than being silently ignored.
+ */
+export const approvalDecisionSchema = z
+  .object({
+    reason: z
+      .string({ invalid_type_error: 'reason must be a string' })
+      .trim()
+      .min(1, 'reason must not be empty when supplied')
+      .max(500, 'reason must be 500 characters or fewer')
+      .optional(),
+    // Echoed back for confirmation, never used to CHOOSE the action.
+    expected_action: z
+      .enum(RECOVERY_ACTIONS, {
+        errorMap: () => ({ message: `expected_action must be one of ${RECOVERY_ACTIONS.join(', ')}` }),
+      })
       .optional(),
   })
   .strict();

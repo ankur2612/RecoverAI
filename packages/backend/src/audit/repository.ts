@@ -29,6 +29,11 @@ export const AUDIT_EVENT_TYPES = [
   'OUTCOME_VERIFIED',
   'OUTCOME_NOT_RECOVERED',
   'OUTCOME_UNCONFIRMED',
+  // Human decisions. Distinct from POLICY_EVALUATED: a person deciding is not
+  // the engine authorizing, and conflating them in the trail would hide which
+  // of the two permitted an action.
+  'APPROVAL_GRANTED',
+  'APPROVAL_REJECTED',
 ] as const;
 export type AuditEventType = (typeof AUDIT_EVENT_TYPES)[number];
 
