@@ -200,6 +200,45 @@ describe('UNCONFIRMED safety messaging', () => {
 // ---------------------------------------------------------------------------
 
 describe('the five lifecycle stages are never collapsed', () => {
+  test('the Overview names all five stages and states the AI does not authorize', async () => {
+    /*
+     * The landing screen has to draw the recommend/authorize distinction
+     * before anyone reads the money figures beneath it, otherwise "Verified
+     * Recovered" looks like an ordinary retry-success count.
+     */
+    vi.spyOn(api, 'analytics').mockResolvedValue({
+      total_cases: 10,
+      total_payments: 10,
+      amount_at_risk: 299_880_000,
+      amount_recovered: 74_970_000,
+      amount_unrecovered: 224_910_000,
+      recovery_rate: 0.25,
+      currency_unit: 'minor',
+      cases_by_status: [{ key: 'RECOVERED', count: 3 }],
+      cases_by_action: [],
+      actions_by_execution_status: [],
+      actions_by_verification_status: [{ key: 'VERIFIED', count: 3 }],
+      actions_by_policy_status: [],
+      definitions: {},
+    });
+    vi.spyOn(api, 'listCases').mockResolvedValue({
+      cases: [],
+      pagination: { total: 0, limit: 8, offset: 0 },
+    });
+
+    const { container } = renderWithProviders(<Overview />);
+    await screen.findByText(/Every recovery passes through five stages/i);
+
+    for (const stage of ['Diagnose', 'Authorize', 'Approve', 'Execute', 'Verify']) {
+      expect(screen.getByText(stage)).toBeInTheDocument();
+    }
+    expect(container.textContent).toContain('It never authorizes, and never moves money.');
+    // The measurement rule must survive alongside the new framing.
+    expect(container.textContent).toContain(
+      'Recovered revenue counts only outcomes the verification stage confirmed',
+    );
+  });
+
   test('all five stage cards render distinctly', async () => {
     vi.spyOn(api, 'getCase').mockResolvedValue(detailFixture());
 
@@ -311,7 +350,7 @@ describe('money handling', () => {
 
     renderWithProviders(<Overview />);
     expect(
-      await screen.findByText(/counts only provider outcomes verified by RecoverAI/i),
+      await screen.findByText(/counts only outcomes the verification stage confirmed/i),
     ).toBeInTheDocument();
   });
 });

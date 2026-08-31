@@ -44,7 +44,7 @@ and does not work yet.
 | API authentication | **Working** — shared token; enabled by default in Docker |
 | Rate limiting | **Working** — in-process, per client IP |
 | CI (GitHub Actions), lint (ESLint) | **Working** |
-| Dashboard / frontend | **Not built yet** |
+| **Operations dashboard (React + Vite)** | **Working** — 13 screens on live APIs |
 
 ---
 
@@ -103,6 +103,18 @@ npm run seed -- --db        # generate and persist
 npm run dev                 # backend on :8080
 curl http://localhost:8080/api/health
 ```
+
+### The dashboard
+
+With the backend running, in a second terminal:
+
+```bash
+npm run dev:frontend        # dashboard on :5173
+```
+
+Vite proxies `/api` to the backend, so no CORS configuration is needed. If
+`AUTH_ENABLED=true`, the dashboard asks for the API token on first load and
+keeps it in `sessionStorage` for the tab.
 
 ### Tests
 
@@ -970,10 +982,13 @@ Built (P0 1–5, 9 partial):
 - [x] **Evaluation harness** — precision/recall/F1 against
       `payment_ground_truth`, ground truth never reaching the model
 - [x] **CI (GitHub Actions), ESLint, rate limiting, fail-closed Docker auth**
+- [x] **Operations dashboard** — 13 screens against the live API: overview,
+      cases, case detail, payments, payment detail, audit, analytics,
+      approvals, batch recovery, batch results, sweeper, system status,
+      settings
 
 Not built yet, in rough priority order:
 
-- [ ] **Dashboard** — no frontend package exists
 - [ ] **Per-user identity, roles, and token rotation** — authentication is a
       single shared token; see limitation 13
 - [ ] **Distributed rate limiting** — the current limiter is in-process
@@ -1039,20 +1054,23 @@ Stated plainly, because the PRD asks for honest reporting:
    normalization remain unverified in this checkout. TEST MODE is enforced in
    three independent places — a `rzp_live_*` key is rejected at startup, so no
    real money can move.
-7. **Batch metrics are computable but not exposed.** The persisted state
-   distinguishes executions, verified recoveries, non-recoveries, and unresolved
-   outcomes, but no endpoint or dashboard aggregates them yet.
-8. **No accuracy metrics are computed yet.** `payment_ground_truth` is
-   populated by the seeder and structurally walled off from the AI, but nothing
-   scores predictions against it. No precision/recall/F1 exists — reporting any
-   would be fabrication.
+7. **Batch and sweep runs have no history.** Both endpoints compute a summary
+   and return it; no table stores the run itself. The dashboard therefore holds
+   the last result in memory for the current browser tab and says so on the
+   page — reloading discards it. What a run *did* is permanent: recovery cases,
+   actions, and audit events are all rows. Aggregate recovery metrics are
+   exposed at `GET /api/analytics/recovery`.
+8. **Accuracy metrics are computed by an offline CLI, not the API.**
+   `npm run evaluate` scores predictions against `payment_ground_truth` and
+   reports precision/recall/F1. No HTTP endpoint serves them, so the dashboard
+   shows recovery outcomes rather than model accuracy.
 9. **`recoveryProbability` in the dataset is a simulation parameter**, not a
    measured quantity. It defines what a future simulated executor will do; it is
    not evidence of real-world recoverability.
-10. **The `attempt_count` on an ingested payment is client-supplied.** Until the
-   executor exists there is no server-side retry ledger to reconcile it against,
-   so a caller could understate prior attempts. The retry ceiling is enforced
-   against the value stored.
+10. **The `attempt_count` on an ingested payment is client-supplied.** The
+   executor records its own attempts, but nothing reconciles the ingested count
+   against that ledger, so a caller could understate prior attempts. The retry
+   ceiling is enforced against the value stored.
 11. **Docker is not installed in the development environment used so far**, so
    `docker compose up -d db` and the container build are still unexercised. The
    schema was verified against a locally-installed PostgreSQL 16.14 instead.
