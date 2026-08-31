@@ -67,6 +67,70 @@ function DistributionBar({ items }: { items: CountByKey[] }) {
   );
 }
 
+/**
+ * The five stages, shown on the landing screen.
+ *
+ * This is not decoration. Every figure above depends on the distinction it
+ * draws: a provider accepting a request is not recovered money, and only the
+ * verification stage can say otherwise. Someone seeing this dashboard for the
+ * first time needs that separation before they read the numbers.
+ */
+const STAGES = [
+  { name: 'Diagnose', detail: 'AI classifies why the payment failed. It recommends only.' },
+  { name: 'Authorize', detail: 'A deterministic policy engine decides what may run.' },
+  { name: 'Approve', detail: 'High-value actions wait for a human decision.' },
+  { name: 'Execute', detail: 'The provider is called once, under an idempotency key.' },
+  { name: 'Verify', detail: 'Evidence decides whether revenue actually moved.' },
+] as const;
+
+function Pipeline() {
+  return (
+    <section
+      aria-label="How RecoverAI works"
+      className="rounded-xl border border-line bg-surface px-5 py-4"
+    >
+      <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+        <h2 className="text-[13px] font-semibold text-ink">
+          Every recovery passes through five stages
+        </h2>
+        <p className="text-[12px] text-ink-subtle">
+          The AI recommends. It never authorizes, and never moves money.
+        </p>
+      </div>
+
+      <ol className="mt-3 grid gap-2 sm:grid-cols-3 lg:grid-cols-5">
+        {STAGES.map((stage, index) => (
+          <li
+            key={stage.name}
+            className={cx(
+              'rounded-lg border px-3 py-2.5',
+              // Only the final stage is emphasised: it is the one that decides
+              // whether the "Verified Recovered" figure above may count a case.
+              index === STAGES.length - 1
+                ? 'border-verified/30 bg-verified-bg/40'
+                : 'border-line bg-canvas',
+            )}
+          >
+            <p className="flex items-center gap-1.5 text-[12.5px] font-medium text-ink">
+              <span aria-hidden="true" className="tabular text-ink-subtle">
+                {index + 1}
+              </span>
+              {stage.name}
+            </p>
+            <p className="mt-0.5 text-[11.5px] leading-snug text-ink-subtle">{stage.detail}</p>
+          </li>
+        ))}
+      </ol>
+
+      <p className="mt-3 border-t border-line pt-3 text-[12px] leading-relaxed text-ink-muted">
+        <span className="font-medium text-ink">How recovery is measured. </span>
+        Recovered revenue counts only outcomes the verification stage confirmed. An AI
+        recommendation, a policy approval, or a provider accepting a request does not count.
+      </p>
+    </section>
+  );
+}
+
 export function Overview() {
   const analytics = useQuery({
     queryKey: ['analytics'],
@@ -169,15 +233,8 @@ export function Overview() {
         )}
       </section>
 
-      {/* ---- How recovery is measured ---- */}
-      {data !== undefined && (
-        <p className="rounded-lg border border-line bg-surface px-4 py-3 text-[12.5px] leading-relaxed text-ink-muted">
-          <span className="font-medium text-ink">How recovery is measured. </span>
-          Recovered revenue counts only provider outcomes verified by RecoverAI. AI
-          recommendations, policy approvals, and accepted executions do not count as recovered
-          revenue.
-        </p>
-      )}
+      {/* ---- What the product does, and why the figures above are trustworthy ---- */}
+      <Pipeline />
 
       {/* ---- Recovery health ---- */}
       <div className="grid gap-4 lg:grid-cols-2">
