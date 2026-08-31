@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { loadConfig, redactedConfig } from '../config/index.ts';
+import { loadConfig, redactedConfig, type AppConfig } from '../config/index.ts';
 import { getPool } from '../db/pool.ts';
 
 /**
@@ -8,9 +8,15 @@ import { getPool } from '../db/pool.ts';
  * Reports process liveness and database reachability. The config block is
  * passed through redactedConfig() so no secret ever reaches this response.
  */
-export async function registerHealthRoutes(app: FastifyInstance): Promise<void> {
+export async function registerHealthRoutes(
+  app: FastifyInstance,
+  // The configuration the app was actually built with. Re-reading the
+  // environment here would let health report a different posture than the one
+  // in force — including a different authentication state.
+  injectedConfig?: AppConfig,
+): Promise<void> {
   app.get('/api/health', async (_request, reply) => {
-    const config = loadConfig();
+    const config = injectedConfig ?? loadConfig();
 
     let database: { reachable: boolean; error?: string };
     try {

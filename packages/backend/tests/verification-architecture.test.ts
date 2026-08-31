@@ -233,8 +233,10 @@ describe('verification architecture — no other layer claims recovery', () => {
   });
 });
 
-describe('verification architecture — Razorpay remains unbuilt', () => {
+describe('verification architecture — no vendor SDK is pulled in', () => {
   test('no module imports the Razorpay SDK', () => {
+    // Still true after the Razorpay provider landed: it talks HTTP directly
+    // rather than pulling in the SDK, so no vendor type can leak upward.
     for (const file of walk(SRC)) {
       const source = readFileSync(file, 'utf8');
       assert.ok(

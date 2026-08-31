@@ -73,7 +73,11 @@ function notApplicable(rule: RuleResult['rule'], reason: string): RuleResult {
 }
 
 /** Assemble the final verdict from the collected rule results. */
-function summarise(action: string, rules: RuleResult[]): PolicyResult {
+function summarise(
+  action: string,
+  rules: RuleResult[],
+  humanApprovalGranted: boolean,
+): PolicyResult {
   const denialReasons = rules
     .filter((r) => r.status === 'FAIL')
     .map((r) => r.code)
@@ -85,10 +89,23 @@ function summarise(action: string, rules: RuleResult[]): PolicyResult {
     .filter((code): code is PolicyReasonCode => code !== null);
 
   const hasFailure = denialReasons.length > 0;
-  const needsApproval = approvalReasons.length > 0;
 
-  // Authorization requires the absence of BOTH failures and approval gates.
-  // This is the line that keeps "a human must look at it" from becoming "go".
+  // A recorded human decision SATISFIES approval gates. It does nothing else.
+  //
+  // The asymmetry is the whole safety property: `hasFailure` is computed from
+  // FAIL rules and is untouched by approval, so an approved case whose payment
+  // has since been captured, whose retry budget is exhausted, whose cooldown
+  // has not elapsed, or which already has a duplicate action is STILL denied.
+  // A human can authorise a judgement call; a human cannot authorise a rule
+  // violation.
+  //
+  // The gates themselves are still reported in approvalReasons, so the audit
+  // record shows exactly WHAT was approved rather than an empty list.
+  const needsApproval = approvalReasons.length > 0 && !humanApprovalGranted;
+
+  // Authorization requires the absence of BOTH failures and unsatisfied
+  // approval gates. This is the line that keeps "a human must look at it" from
+  // becoming "go" on its own.
   const authorized = !hasFailure && !needsApproval;
 
   const decision: PolicyDecision = hasFailure
@@ -147,7 +164,7 @@ export function evaluatePolicy(input: PolicyInput, config: PolicyConfig): Policy
       ),
     );
     // Nothing further can be judged reliably; return blocked immediately.
-    return summarise(action, rules);
+    return summarise(action, rules, input.humanApprovalGranted);
   }
   rules.push(pass('REQUIRED_INFORMATION_PRESENT', 'All safety-critical fields are present.'));
 
@@ -365,7 +382,7 @@ export function evaluatePolicy(input: PolicyInput, config: PolicyConfig): Policy
     );
   }
 
-  return summarise(action, rules);
+  return summarise(action, rules, input.humanApprovalGranted);
 }
 
 /**

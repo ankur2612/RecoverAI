@@ -6,16 +6,29 @@ import { findPaymentById } from '../payments/repository.ts';
 import { analyzePayment } from '../recovery/analyze.ts';
 import {
   DuplicateOpenCaseError,
+  findCaseById,
   listRecoveryCases,
   type RecoveryCase,
 } from '../recovery/repository.ts';
-import { analyzeRequestSchema, listCasesQuerySchema, formatZodIssues } from './schemas.ts';
+import {
+  analyzeRequestSchema,
+  approvalDecisionSchema,
+  listCasesQuerySchema,
+  formatZodIssues,
+} from './schemas.ts';
 import { serialisePayment } from './payments.ts';
 import { executeRecoveryCase } from '../recovery/execute-service.ts';
 import { createRecoveryProvider } from '../payments/factory.ts';
 import type { RecoveryProvider } from '../payments/provider.ts';
 import { listActionsForCase, type RecoveryAction } from '../recovery/action-repository.ts';
 import { verifyRecoveryCase } from '../recovery/verify-service.ts';
+import {
+  approveRecoveryCase,
+  rejectRecoveryCase,
+  type DecisionResult,
+} from '../recovery/approval-service.ts';
+import { findDecisionForCase, type RecoveryApproval } from '../recovery/approval-repository.ts';
+import { listAuditEventsForPayment } from '../audit/repository.ts';
 
 function serialiseCase(recoveryCase: RecoveryCase) {
   return {
@@ -62,6 +75,51 @@ function serialiseAction(action: RecoveryAction) {
     created_at: action.createdAt.toISOString(),
     executed_at: action.executedAt === null ? null : action.executedAt.toISOString(),
     completed_at: action.completedAt === null ? null : action.completedAt.toISOString(),
+  };
+}
+
+/**
+ * The identity recorded on a decision.
+ *
+ * Authentication currently uses a shared API token, so the caller is a service
+ * rather than a named person. Recording that honestly is better than inventing
+ * a user; the field exists so a real identity slots in later.
+ */
+const APPROVAL_ACTOR = 'api:authenticated-operator';
+
+function serialiseApproval(approval: RecoveryApproval) {
+  return {
+    id: approval.id,
+    case_id: approval.recoveryCaseId,
+    decision: approval.decision,
+    actor: approval.actor,
+    reason: approval.reason,
+    approved_action: approval.approvedAction,
+    policy_version: approval.policyVersion,
+    created_at: approval.createdAt.toISOString(),
+  };
+}
+
+function serialiseDecision(result: DecisionResult) {
+  return {
+    recorded: result.recorded,
+    message: result.message,
+    approval:
+      result.approval === null
+        ? null
+        : {
+            id: result.approval.id,
+            case_id: result.approval.recoveryCaseId,
+            decision: result.approval.decision,
+            actor: result.approval.actor,
+            reason: result.approval.reason,
+            approved_action: result.approval.approvedAction,
+            policy_version: result.approval.policyVersion,
+            created_at: result.approval.createdAt.toISOString(),
+          },
+    case: result.recoveryCase === null ? null : serialiseCase(result.recoveryCase),
+    // Stated in the response so no client can mistake approval for permission.
+    note: 'Approval is not authorization. Policy is re-evaluated at execution time.',
   };
 }
 
@@ -175,6 +233,141 @@ export async function registerRecoveryRoutes(
       throw error;
     }
   });
+
+  /**
+   * GET /api/recovery/:caseId
+   *
+   * READ ONLY. Assembles everything a case-detail view needs in one call:
+   * the case (which carries the AI diagnosis), its actions (which carry the
+   * policy status, execution status and verification verdict), the human
+   * decision if one was made, and the audit trail for its payment.
+   *
+   * It deliberately does NOT re-run the policy engine. POST /analyze is the
+   * only endpoint that evaluates policy, and it CREATES a case as a side
+   * effect — calling it to render a read screen would manufacture state. The
+   * policy verdict shown here is the one actually recorded on the action.
+   */
+  app.get<{ Params: { caseId: string } }>(
+    '/api/recovery/:caseId',
+    async (request, reply) => {
+      const { caseId } = request.params;
+      if (typeof caseId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(caseId)) {
+        return reply.code(400).send({
+          error: 'validation_error',
+          message: 'caseId must be 1-64 characters of letters, digits, underscore or hyphen.',
+        });
+      }
+
+      const recoveryCase = await findCaseById(caseId);
+      if (recoveryCase === null) {
+        return reply.code(404).send({
+          error: 'not_found',
+          message: `Recovery case ${caseId} was not found.`,
+        });
+      }
+
+      const [payment, actions, approval, auditEvents] = await Promise.all([
+        findPaymentById(recoveryCase.paymentId),
+        listActionsForCase(caseId),
+        findDecisionForCase(caseId),
+        listAuditEventsForPayment(recoveryCase.paymentId),
+      ]);
+
+      return reply.code(200).send({
+        case: serialiseCase(recoveryCase),
+        payment: payment === null ? null : serialisePayment(payment),
+        actions: actions.map(serialiseAction),
+        approval: approval === null ? null : serialiseApproval(approval),
+        // Scoped to this case's payment. Metadata is written by the services
+        // themselves and never contains a credential.
+        audit: auditEvents.map((event) => ({
+          id: event.id,
+          payment_id: event.paymentId,
+          case_id: event.caseId,
+          event_type: event.eventType,
+          actor: event.actor,
+          decision: event.decision,
+          metadata: event.metadata,
+          created_at: event.createdAt.toISOString(),
+        })),
+      });
+    },
+  );
+
+  /**
+   * POST /api/recovery/:caseId/approve  and  /reject
+   *
+   * THE HUMAN DECISION. Neither endpoint executes anything.
+   *
+   * Approving records that a person reviewed the case and said yes. It does
+   * NOT authorize the action and does NOT contact a payment provider —
+   * execution stays behind POST /:caseId/execute, which re-evaluates the
+   * deterministic policy engine against CURRENT state and can still refuse.
+   *
+   * The actor recorded is the authenticated API identity. With a shared token
+   * that is a service identity rather than a named person; the audit trail and
+   * the approval record both carry it so a later identity system slots in
+   * without a schema change.
+   */
+  const decisionHandler =
+    (decide: typeof approveRecoveryCase) =>
+    async (
+      request: { params: { caseId: string }; body: unknown },
+      reply: {
+        code: (n: number) => { send: (body: unknown) => unknown };
+      },
+    ) => {
+      const { caseId } = request.params;
+      if (typeof caseId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(caseId)) {
+        return reply.code(400).send({
+          error: 'validation_error',
+          message: 'caseId must be 1-64 characters of letters, digits, underscore or hyphen.',
+        });
+      }
+
+      const parsed = approvalDecisionSchema.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        return reply.code(400).send({
+          error: 'validation_error',
+          message: 'The decision request is invalid.',
+          issues: formatZodIssues(parsed.error),
+        });
+      }
+
+      const result = await decide(
+        caseId,
+        {
+          ...(parsed.data.reason === undefined ? {} : { reason: parsed.data.reason }),
+          ...(parsed.data.expected_action === undefined
+            ? {}
+            : { expectedAction: parsed.data.expected_action }),
+        },
+        { actor: APPROVAL_ACTOR },
+      );
+
+      if (result.failure !== null) {
+        // 404 for a missing case, 409 for a state conflict — the case exists
+        // but is not in a state where this decision is meaningful.
+        const status = result.failure === 'CASE_NOT_FOUND' ? 404 : 409;
+        return reply.code(status).send({
+          error: result.failure.toLowerCase(),
+          message: result.message,
+          ...(result.recoveryCase === null ? {} : { case: serialiseCase(result.recoveryCase) }),
+        });
+      }
+
+      return reply.code(200).send(serialiseDecision(result));
+    };
+
+  app.post<{ Params: { caseId: string } }>(
+    '/api/recovery/:caseId/approve',
+    decisionHandler(approveRecoveryCase),
+  );
+
+  app.post<{ Params: { caseId: string } }>(
+    '/api/recovery/:caseId/reject',
+    decisionHandler(rejectRecoveryCase),
+  );
 
   /**
    * POST /api/recovery/:caseId/execute

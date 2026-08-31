@@ -1,8 +1,4 @@
-import type {
-  ExecutionStatus,
-  PaymentStatus,
-  VerificationStatus,
-} from '../shared/types.ts';
+import type { ExecutionStatus, PaymentStatus, VerificationStatus } from '../shared/types.ts';
 import type { ObservedPaymentState } from '../payments/provider.ts';
 
 /**

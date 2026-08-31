@@ -1,8 +1,11 @@
 import Fastify, { type FastifyInstance, type FastifyError } from 'fastify';
-import { loadConfig } from './config/index.ts';
+import { loadConfig, type AppConfig } from './config/index.ts';
+import { registerAuth } from './api/auth.ts';
+import { registerRateLimit } from './api/rate-limit.ts';
 import { registerHealthRoutes } from './api/health.ts';
 import { registerPaymentRoutes } from './api/payments.ts';
 import { registerRecoveryRoutes } from './api/recovery.ts';
+import { registerAnalyticsRoutes } from './api/analytics.ts';
 import type { AIProvider } from './agents/diagnosis/provider.ts';
 import type { RecoveryProvider } from './payments/provider.ts';
 
@@ -17,10 +20,18 @@ export interface BuildAppOptions {
   provider?: AIProvider;
   /** Injected in tests so execution runs against a controllable provider. */
   recoveryProvider?: RecoveryProvider;
+  /**
+   * Overrides the environment-derived configuration.
+   *
+   * Exists so authentication tests can build an app with a known token without
+   * mutating process.env, which would leak across concurrently running test
+   * files. Production (index.ts) passes nothing and reads the environment.
+   */
+  config?: AppConfig;
 }
 
 export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyInstance> {
-  const config = loadConfig();
+  const config = options.config ?? loadConfig();
 
   const app = Fastify({
     logger: {
@@ -41,13 +52,32 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     bodyLimit: 1_048_576,
   });
 
-  await registerHealthRoutes(app);
+  // Rate limiting BEFORE authentication, so a flood of credential guesses is
+  // throttled without each one reaching the token comparison. Both are
+  // onRequest hooks and Fastify runs them in registration order.
+  await registerRateLimit(app, config);
+
+  // Registered BEFORE any route. An onRequest hook added here applies to every
+  // route registered afterwards, so no handler can run for a request that
+  // failed authentication.
+  await registerAuth(app, config);
+
+  await registerHealthRoutes(app, config);
   await registerPaymentRoutes(app);
   await registerRecoveryRoutes(app, {
     ...(options.provider === undefined ? {} : { provider: options.provider }),
     ...(options.recoveryProvider === undefined
       ? {}
       : { recoveryProvider: options.recoveryProvider }),
+  });
+  // Batch runs and analytics. Registered after the auth hook like every other
+  // route, so both are protected when AUTH_ENABLED=true.
+  await registerAnalyticsRoutes(app, {
+    ...(options.provider === undefined ? {} : { provider: options.provider }),
+    ...(options.recoveryProvider === undefined
+      ? {}
+      : { recoveryProvider: options.recoveryProvider }),
+    config,
   });
 
   app.setNotFoundHandler((request, reply) => {

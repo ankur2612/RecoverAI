@@ -100,8 +100,7 @@ export async function verifyRecoveryCase(
       recoveryCase,
       action: null,
       alreadyVerified: false,
-      message:
-        `Recovery case ${caseId} has no completed execution, so there is no outcome to verify.`,
+      message: `Recovery case ${caseId} has no completed execution, so there is no outcome to verify.`,
     };
   }
 

@@ -28,6 +28,8 @@ function input(overrides: Partial<PolicyInput> = {}): PolicyInput {
     confidence: 0.92,
     duplicateActionExists: false,
     alreadyRecovered: false,
+    // Default FALSE: an un-approved case, matching every pre-existing test.
+    humanApprovalGranted: false,
     remindersSent: 0,
     humanReviewRequested: false,
     ...overrides,

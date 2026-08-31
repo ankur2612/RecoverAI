@@ -14,9 +14,11 @@ executes only what policy permits, and measures what was actually recovered.
 
 ## Build status
 
-This repository is being built incrementally against the RecoverAI PRD. The
-current state is **P0 items 1–4** (foundation). See
-[Roadmap](#roadmap) for exactly what does and does not work yet.
+This repository is built incrementally against the RecoverAI PRD. The backend
+recovery pipeline — detect, diagnose, authorize, execute, verify — is complete
+and tested end to end. Two real providers are implemented (Gemini, Razorpay
+Test Mode). See [Known limitations](#known-limitations) for exactly what does
+and does not work yet.
 
 | Area | Status |
 | --- | --- |
@@ -33,7 +35,16 @@ current state is **P0 items 1–4** (foundation). See
 | **Deterministic policy engine (authorization)** | **Working** |
 | **Recovery executor + idempotency (execution)** | **Working** |
 | **Outcome verification (evidence)** | **Working** |
-| Razorpay, approval workflow, dashboard | **Not built yet** |
+| **Gemini AI provider** | **Working, live-verified** |
+| **Razorpay Test Mode provider** | **Working, mock-tested; live lookup unproven** |
+| **Batch recovery + analytics API** | **Working** |
+| **Crash recovery sweeper** | **Working** |
+| **Human approval workflow** | **Working** |
+| **AI evaluation harness** | **Working** |
+| API authentication | **Working** — shared token; enabled by default in Docker |
+| Rate limiting | **Working** — in-process, per client IP |
+| CI (GitHub Actions), lint (ESLint) | **Working** |
+| Dashboard / frontend | **Not built yet** |
 
 ---
 
@@ -96,7 +107,7 @@ curl http://localhost:8080/api/health
 ### Tests
 
 ```bash
-npm test            # 374 tests (integration tests skip without a database)
+npm test            # offline tests (no database, no credentials)
 npm run typecheck
 npm run build
 ```
@@ -108,7 +119,7 @@ runnable on a machine with no PostgreSQL:
 
 ```bash
 RECOVERAI_TEST_DATABASE_URL=postgres://user:pass@host:port/db npm test
-# 466 tests (adds 92 live-database integration tests)
+# adds the live-database integration suites
 ```
 
 ---
@@ -191,10 +202,10 @@ packages/backend/src/
 │                 verify-service.ts, verification-types.ts,
 │                 repository.ts, action-repository.ts
 ├── audit/        append-only audit writes
-├── analytics/    metrics + evaluation                   (empty — next phase)
+├── analytics/    recovery metrics, evaluation harness, metrics primitives
 ├── datasets/     synthetic data generator
 ├── db/           pool, type parsers, migrations, runner
-├── jobs/         batch processing                       (empty — next phase)
+├── jobs/         batch recovery orchestration, sweeper CLI
 ├── config/       env loading, policy values, redaction
 └── shared/       domain types, seeded RNG
 ```
@@ -241,8 +252,19 @@ Every value lives in the environment; see [.env.example](.env.example).
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `AI_PROVIDER` | `mock` | `mock` \| `claude` \| `openai` |
+| `AUTH_ENABLED` | `false` locally, **`true` in Docker** | `true` \| `false` \| `1` \| `0` — protects every route except health |
+| `RATE_LIMIT_ENABLED` | `true` | Bounds requests per client IP |
+| `RATE_LIMIT_MAX` | `120` | Requests per window, per client |
+| `RATE_LIMIT_WINDOW_MS` | `60000` | Window length in milliseconds |
+| `API_AUTH_TOKEN` | *(unset)* | **Required when `AUTH_ENABLED=true`**; min 16 chars. Never logged or returned |
+| `AI_PROVIDER` | `mock` | `mock` \| `gemini` \| `claude` \| `openai` |
+| `GEMINI_API_KEY` | *(unset)* | Required when `AI_PROVIDER=gemini` |
+| `GEMINI_MODEL` | `gemini-3.7-flash` | Overridable per deployment |
 | `PAYMENT_PROVIDER` | `mock` | `mock` \| `razorpay` |
+| `RAZORPAY_KEY_ID` | *(unset)* | **Test Mode only** — must match `rzp_test_*` |
+| `RAZORPAY_KEY_SECRET` | *(unset)* | Required when `PAYMENT_PROVIDER=razorpay` |
+| `RECOVERAI_LIVE_PROVIDER_TESTS` | *(unset)* | Set to `1` to enable gated live smoke tests |
+| `RAZORPAY_SMOKE_PAYMENT_ID` | *(unset)* | A Test Mode payment id; enables the read-only live lookup |
 | `POLICY_MAX_RETRY_ATTEMPTS` | `3` | Retry ceiling per payment |
 | `POLICY_MAX_AUTOMATED_AMOUNT` | `1000000` | Paise (INR 10,000) |
 | `POLICY_MIN_RECOVERY_CONFIDENCE` | `0.75` | Below this, no auto-execution |
@@ -252,6 +274,13 @@ Every value lives in the environment; see [.env.example](.env.example).
 
 `mock` is the default for both providers so that tests and the batch demo run
 with **no API keys, no cost, and no variance between runs**.
+
+Selecting a real provider **without its credentials fails at startup**.
+RecoverAI never silently falls back to a mock: a deployment must not appear to
+use a real model or payment gateway while serving deterministic stubs.
+
+Secret values belong in `.env` only, which is gitignored. `.env.example`
+documents every variable with empty placeholders.
 
 ### Secret handling
 
@@ -297,7 +326,11 @@ landing entirely in dev by chance.
 | `POST /api/recovery/:caseId/execute` | Working — **the only endpoint that acts** |
 | `POST /api/recovery/:caseId/verify` | Working — **establishes the outcome** |
 | `GET /api/recovery/:caseId/actions` | Working |
-| approval endpoints in PRD §25 | Not built yet |
+| `POST /api/recovery/:caseId/approve` | Working — **records a human decision; executes nothing** |
+| `POST /api/recovery/:caseId/reject` | Working — terminal for that case |
+| `POST /api/recovery/runs` | Working — batch run over a population |
+| `POST /api/recovery/sweep` | Working — resolves stranded actions by observation |
+| `GET /api/analytics/recovery` | Working — VERIFIED-only recovered revenue |
 
 `/api/health` returns `200` when the database is reachable and `503` when it is
 not, with the failure reason included and all credentials redacted.
@@ -375,6 +408,193 @@ refund, notify anyone, or contact any payment provider.**
 
 Re-analyzing a payment that already has a live case returns that case with
 `existing_case: true` rather than creating a competing one.
+
+---
+
+## Authentication
+
+**Off by default.** Set `AUTH_ENABLED=true` and `API_AUTH_TOKEN` to protect the
+API. A production deployment must do both.
+
+```bash
+AUTH_ENABLED=true
+API_AUTH_TOKEN=<a long random string, min 16 chars>   # keep in .env only
+```
+
+Two header forms are accepted:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/recovery/cases
+curl -H "x-api-key: $TOKEN"            http://localhost:8080/api/recovery/cases
+```
+
+### Authentication is not authorization
+
+This distinction is the whole point, and the architecture enforces it:
+
+| | Question | Owner |
+| --- | --- | --- |
+| **Authentication** | *May this caller reach the API?* | the `onRequest` hook |
+| **Authorization** | *Is this recovery action permitted?* | the deterministic policy engine |
+
+A valid token buys the right to **ask**. It never satisfies a retry budget,
+grants a human approval, bypasses idempotency, or authorizes an action the
+policy engine refused. The two layers cannot be confused because the domain
+**cannot see** the auth module: architecture tests assert that the executor,
+policy engine, providers, repositories, and verifier neither import it nor
+reference any of its symbols, and that only `app.ts` registers it.
+
+### Behaviour
+
+| Situation | Result |
+| --- | --- |
+| `GET /api/health`, no credentials | **200/503 — always public** (readiness probes) |
+| Every other route, no credentials | `401` |
+| Wrong token, either header | `401` |
+| Malformed `Authorization` (`Basic …`, bare token, empty `Bearer`) | `401` |
+| **Both headers with different values** | `401` — ambiguous, refused |
+| Both headers with the *same* value | accepted (a proxy may copy one to the other) |
+| Repeated `x-api-key` header | `401` — ambiguous |
+| Unknown path, no credentials | `401`, not `404` — path existence is not disclosed |
+
+Comparison uses `crypto.timingSafeEqual`, so a wrong token cannot be recovered
+one byte at a time from response timing.
+
+Every rejection returns the **same** generic body and a
+`WWW-Authenticate: Bearer` challenge. Distinguishing "malformed" from "invalid"
+in the response would tell a prober whether they had the right shape. The
+specific reason is logged server-side instead — **without the credential**.
+
+### Secret handling
+
+- `API_AUTH_TOKEN` is read only by `loadConfig()`; no route or domain module
+  reads it, and a test enforces that.
+- `redactedConfig()` exposes `auth.credentialPresent` — a boolean — never the
+  token. `/api/health` is therefore safe to expose.
+- Fastify's logger redacts `authorization` and `x-api-key` from request logs.
+- A 401 never echoes the supplied credential back to the caller.
+- Enabling auth without a token, or with one under 16 characters, **fails at
+  startup**. RecoverAI refuses to serve an API that appears protected but
+  accepts everyone.
+
+---
+
+## Providers
+
+Two real integrations sit behind the existing abstractions. Neither is visible
+to the policy engine, executor, verifier, or AI layer — architecture tests
+enforce that vendor code stays confined to its own file.
+
+### Gemini (AI diagnosis)
+
+`packages/backend/src/agents/diagnosis/providers/gemini.ts`
+
+Implements the existing `AIProvider` interface. It reuses the shared prompt
+builder, system prompt, and strict validator — there is no second prompt path.
+
+- **REST via `fetch`**, no SDK, so no vendor type reaches the domain layer.
+- **One request per diagnosis.** No automatic retry.
+- Key travels in the `x-goog-api-key` **header**, never a URL.
+- **No deprecated Gemini 3.x sampling parameters** are sent (no `temperature`,
+  `topP`, `topK`, `candidateCount`, `thinkingBudget`). `generationConfig`
+  carries only `responseMimeType` and `maxOutputTokens`.
+- 60s timeout. 429/5xx/timeout are classified `transient` on the thrown error.
+- **Every failure throws.** A provider failure can never become an optimistic
+  recommendation — `analyze` falls back to the deterministic baseline and the
+  policy engine still authorizes independently.
+
+Enable with `AI_PROVIDER=gemini` and `GEMINI_API_KEY`.
+
+### Razorpay (recovery execution) — TEST MODE ONLY
+
+`packages/backend/src/payments/providers/razorpay.ts`
+
+Implements the existing `RecoveryProvider` interface. Direct HTTP; the Razorpay
+SDK is not a dependency.
+
+**Test-mode enforcement, three independent times:**
+
+1. `loadConfig()` rejects any `RAZORPAY_KEY_ID` that is not `rzp_test_<alnum>`
+2. the provider constructor rejects it again
+3. `createRecoveryProvider()` refuses to fall back to the mock
+
+A `rzp_live_*` key throws at startup. **No real money can move.**
+
+**The API surface is exactly two endpoints** — there is no refund, transfer,
+payout, or order-creation capability anywhere in the code:
+
+| Operation | Endpoint |
+| --- | --- |
+| Observe state | `GET /payments/:id` |
+| Capture an authorized payment | `POST /payments/:id/capture` |
+
+**`RETRY` → Razorpay operation mapping.** Razorpay has no "retry a failed
+payment" endpoint, and the provider does not invent one. It reads current state
+first, then dispatches only to an operation valid for that state:
+
+| Observed state | Operation | Outcome |
+| --- | --- | --- |
+| `authorized` | capture | `SUCCESS` |
+| `captured` | none — already collected | `SUCCESS` |
+| `failed` | **none** | `FAILED` — "no operation was performed" |
+| `refunded` | none — terminal | `FAILED` |
+| `created` / `pending` | none — nothing to capture | `UNKNOWN` |
+| unrecognised / missing | none — fail closed | `UNKNOWN` |
+| 5xx / 429 (either call) | — | `UNKNOWN` |
+| 4xx on capture | — | `FAILED` |
+
+`UNKNOWN` is never treated as `FAILED`: a transport error does not prove the
+remote side did nothing, and collapsing the two could invite a double charge.
+
+Enable with `PAYMENT_PROVIDER=razorpay`, `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`.
+
+---
+
+## Testing
+
+Three tiers. **Only the third makes network calls, and it is opt-in.**
+
+### 1. Offline tests — no database, no credentials
+
+```bash
+npm test
+```
+
+Offline tests use hardcoded fake credentials and read no `.env`.
+
+### 2. Database-backed tests
+
+Point at a disposable PostgreSQL — never a database you care about:
+
+```bash
+RECOVERAI_TEST_DATABASE_URL=postgres://user:pass@localhost:5432/recoverai_test npm test
+```
+
+Adds the live-database integration suites. Migrations run
+automatically; fixtures clean up after themselves.
+
+### 3. Gated live provider smoke tests
+
+**Makes real API calls.** Never runs as part of `npm test`.
+
+```bash
+# PowerShell
+$env:RECOVERAI_LIVE_PROVIDER_TESTS="1"
+node --experimental-strip-types --test tests/live-provider-smoke.test.ts
+```
+
+| Test | Requires | Effect |
+| --- | --- | --- |
+| Gemini diagnosis | `GEMINI_API_KEY` | **one** `generateContent` call, synthetic payment data only |
+| Razorpay credential guards | `RAZORPAY_KEY_ID` | no network — string and constructor checks |
+| Razorpay status lookup | `RAZORPAY_SMOKE_PAYMENT_ID` | **one** read-only `GET`; **skips** if unset |
+
+The Razorpay lookup is **read-only**. It asserts the request was a `GET` and
+never touched `/capture`, `/refund`, `/orders`, or `/payments/create`. Nothing
+is created, captured, retried, or refunded, and no money moves.
+
+With `RAZORPAY_SMOKE_PAYMENT_ID` unset that test reports `SKIP` rather than
+guessing an id — a guessed id would either 404 or touch a payment we do not own.
 
 ---
 
@@ -737,13 +957,27 @@ Built (P0 1–5, 9 partial):
       idempotency and safe UNKNOWN handling
 - [x] **Outcome verification** — evidence-based business outcome, with the
       UNKNOWN resolution path
+- [x] **Gemini AI provider** — live-verified with a real `generateContent` call
+- [x] **Razorpay Test Mode provider** — implemented, unit-tested, credential
+      guards live-verified
 
-Next: **Razorpay Test Mode integration** — the full abstraction is now proven
-end to end against the mock, so the real provider slots in behind it. Then the
-approval workflow, batch metrics, and the dashboard.
+- [x] **API authentication** — shared token, timing-safe, health stays public
+- [x] **Batch recovery + analytics** — population-level runs, aggregate metrics
+- [x] **Crash recovery sweeper** — resolves stranded actions by observation,
+      never by a blind retry
+- [x] **Human approval workflow** — approval satisfies policy gates only, never
+      a failure rule
+- [x] **Evaluation harness** — precision/recall/F1 against
+      `payment_ground_truth`, ground truth never reaching the model
+- [x] **CI (GitHub Actions), ESLint, rate limiting, fail-closed Docker auth**
 
-Then (P1): failure simulation, manual approval workflow, held-out evaluation
-with precision/recall/F1 scored against `payment_ground_truth`.
+Not built yet, in rough priority order:
+
+- [ ] **Dashboard** — no frontend package exists
+- [ ] **Per-user identity, roles, and token rotation** — authentication is a
+      single shared token; see limitation 13
+- [ ] **Distributed rate limiting** — the current limiter is in-process
+- [ ] **Metrics/tracing export** — structured logs only, no OpenTelemetry
 
 ---
 
@@ -774,19 +1008,20 @@ database). Verified there, not merely asserted:
 
 Stated plainly, because the PRD asks for honest reporting:
 
-1. **No real LLM provider is implemented.** Only MockAI exists. The Claude and
-   OpenAI providers are defined in the config and the factory, but constructing
-   one **throws** rather than silently falling back to MockAI — a misconfigured
-   deployment fails loudly instead of producing plausible fake diagnoses.
-   MockAI is a transparent rule-based diagnoser, not a simulated LLM, and its
-   accuracy figures say nothing about how a real model would perform.
+1. **Gemini is the only real LLM provider.** Claude and OpenAI are named in the
+   config and factory, but constructing either **throws** rather than silently
+   falling back to MockAI — a misconfigured deployment fails loudly instead of
+   producing plausible fake diagnoses. MockAI remains available and is the
+   default; it is a transparent rule-based diagnoser, not a simulated LLM, so
+   its outputs say nothing about how a real model performs.
 2. **Verification is explicit, not automatic.** Nothing verifies an outcome on
    its own: `POST /api/recovery/:caseId/verify` must be called. An action can
    therefore sit `AWAITING_VERIFICATION` indefinitely. A background worker is
    the natural next step but was deliberately not built here.
-3. **The observed payment state comes from the mock provider.** The rules and
-   the evidence model are real; the observations are simulated until Razorpay
-   Test Mode lands.
+3. **Observed payment state comes from whichever provider is configured.** With
+   `PAYMENT_PROVIDER=mock` the observations are simulated. With
+   `PAYMENT_PROVIDER=razorpay` they come from Razorpay Test Mode — real API
+   responses, but never real money.
 4. **Only `RETRY` is executable.** `REMINDER`, `CHECKOUT_RECOVERY`, and
    `SUBSCRIPTION_RETRY` are authorized by policy but no provider can perform
    them, so the executor refuses them as `UNSUPPORTED_ACTION` rather than
@@ -796,8 +1031,14 @@ Stated plainly, because the PRD asks for honest reporting:
    rules. That is a deliberate trade-off (a different rule set is arguably a
    different logical action) but it must become an explicit decision once the
    approval flow lands.
-6. **No Razorpay integration.** `PAYMENT_PROVIDER=razorpay` throws rather than
-   falling back to the mock. No real money can move.
+6. **Razorpay is implemented but its live HTTP path is only partly proven.**
+   The provider is fully unit-tested against an injected transport (44 tests),
+   and the credential guards are live-verified. The read-only status lookup
+   against the real API runs only when `RAZORPAY_SMOKE_PAYMENT_ID` is set; with
+   it unset that test **skips**, so real-API response parsing and status
+   normalization remain unverified in this checkout. TEST MODE is enforced in
+   three independent places — a `rzp_live_*` key is rejected at startup, so no
+   real money can move.
 7. **Batch metrics are computable but not exposed.** The persisted state
    distinguishes executions, verified recoveries, non-recoveries, and unresolved
    outcomes, but no endpoint or dashboard aggregates them yet.
@@ -819,8 +1060,30 @@ Stated plainly, because the PRD asks for honest reporting:
    the PATH that npm hands to `cmd.exe`, even when it is available in your
    shell. Running `node --experimental-strip-types --test "tests/**/*.test.ts"`
    directly works regardless.
-13. **No authentication.** Every endpoint is unauthenticated. Acceptable while
-   nothing can move money; it must be addressed before the executor lands.
+13. **Authentication is a single shared token — there is no user-level
+    accountability.** Everyone who holds the token is indistinguishable to the
+    system. Concretely:
+
+    - **No individual operator identity.** An approval is recorded against
+      `api:authenticated-operator`, which is a *service* identity, not a
+      person. The audit trail can prove *that* a decision was made and when;
+      it cannot prove *who* made it. The `actor` column exists so a real
+      identity system can slot in without a schema change.
+    - **No roles or scopes.** Any valid token can approve a ₹25,000 recovery,
+      trigger a batch run, and read every analytic. There is no separation of
+      duties.
+    - **No rotation mechanism.** Rotating the token is an operational task:
+      set a new `API_AUTH_TOKEN` and restart. There is no overlap window, so
+      rotation is a brief outage for API clients.
+    - **Rate limiting exists** (`RATE_LIMIT_*`) and bounds brute-force
+      guessing, but it is in-process — N replicas permit N times the limit. A
+      real deployment should also limit at the reverse proxy.
+
+    `AUTH_ENABLED` defaults to `false` locally so the test suites and local
+    development need no configuration; **Docker Compose defaults it to `true`
+    and refuses to start without a token.** Note that authentication is not
+    authorization: it controls who may call the API, never which recovery
+    actions are permitted — that stays with the policy engine.
 
 ---
 

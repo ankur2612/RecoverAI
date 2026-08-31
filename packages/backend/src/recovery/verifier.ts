@@ -1,4 +1,3 @@
-import type { ObservedPaymentState } from '../payments/provider.ts';
 import type {
   VerificationEvidence,
   VerificationInput,
@@ -269,5 +268,3 @@ export function canTransition(
   // Re-affirming an existing terminal verdict is allowed; changing it is not.
   return current === next;
 }
-
-export type { ObservedPaymentState };

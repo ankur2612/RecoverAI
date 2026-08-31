@@ -119,6 +119,19 @@ export interface PolicyInput {
   remindersSent: number;
   /** Detector or AI flagged this as needing a human regardless of thresholds. */
   humanReviewRequested: boolean;
+  /**
+   * Whether a human has recorded an APPROVED decision for this case.
+   *
+   * This satisfies APPROVAL GATES ONLY. It can never satisfy a failure rule:
+   * the retry ceiling, cooldown, duplicate-action, already-recovered, and
+   * confidence rules all return FAIL, and FAIL outranks approval in
+   * `summarise`. So an approved case whose payment has since been captured, or
+   * whose retry budget is exhausted, is still denied.
+   *
+   * The caller establishes this from a persisted approval record; the
+   * evaluator stays pure and never reads a database.
+   */
+  humanApprovalGranted: boolean;
 }
 
 /** The evaluator's verdict. */
