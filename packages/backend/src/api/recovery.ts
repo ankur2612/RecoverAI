@@ -6,6 +6,7 @@ import { findPaymentById } from '../payments/repository.ts';
 import { analyzePayment } from '../recovery/analyze.ts';
 import {
   DuplicateOpenCaseError,
+  findCaseById,
   listRecoveryCases,
   type RecoveryCase,
 } from '../recovery/repository.ts';
@@ -26,6 +27,8 @@ import {
   rejectRecoveryCase,
   type DecisionResult,
 } from '../recovery/approval-service.ts';
+import { findDecisionForCase, type RecoveryApproval } from '../recovery/approval-repository.ts';
+import { listAuditEventsForPayment } from '../audit/repository.ts';
 
 function serialiseCase(recoveryCase: RecoveryCase) {
   return {
@@ -83,6 +86,19 @@ function serialiseAction(action: RecoveryAction) {
  * a user; the field exists so a real identity slots in later.
  */
 const APPROVAL_ACTOR = 'api:authenticated-operator';
+
+function serialiseApproval(approval: RecoveryApproval) {
+  return {
+    id: approval.id,
+    case_id: approval.recoveryCaseId,
+    decision: approval.decision,
+    actor: approval.actor,
+    reason: approval.reason,
+    approved_action: approval.approvedAction,
+    policy_version: approval.policyVersion,
+    created_at: approval.createdAt.toISOString(),
+  };
+}
 
 function serialiseDecision(result: DecisionResult) {
   return {
@@ -217,6 +233,66 @@ export async function registerRecoveryRoutes(
       throw error;
     }
   });
+
+  /**
+   * GET /api/recovery/:caseId
+   *
+   * READ ONLY. Assembles everything a case-detail view needs in one call:
+   * the case (which carries the AI diagnosis), its actions (which carry the
+   * policy status, execution status and verification verdict), the human
+   * decision if one was made, and the audit trail for its payment.
+   *
+   * It deliberately does NOT re-run the policy engine. POST /analyze is the
+   * only endpoint that evaluates policy, and it CREATES a case as a side
+   * effect — calling it to render a read screen would manufacture state. The
+   * policy verdict shown here is the one actually recorded on the action.
+   */
+  app.get<{ Params: { caseId: string } }>(
+    '/api/recovery/:caseId',
+    async (request, reply) => {
+      const { caseId } = request.params;
+      if (typeof caseId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(caseId)) {
+        return reply.code(400).send({
+          error: 'validation_error',
+          message: 'caseId must be 1-64 characters of letters, digits, underscore or hyphen.',
+        });
+      }
+
+      const recoveryCase = await findCaseById(caseId);
+      if (recoveryCase === null) {
+        return reply.code(404).send({
+          error: 'not_found',
+          message: `Recovery case ${caseId} was not found.`,
+        });
+      }
+
+      const [payment, actions, approval, auditEvents] = await Promise.all([
+        findPaymentById(recoveryCase.paymentId),
+        listActionsForCase(caseId),
+        findDecisionForCase(caseId),
+        listAuditEventsForPayment(recoveryCase.paymentId),
+      ]);
+
+      return reply.code(200).send({
+        case: serialiseCase(recoveryCase),
+        payment: payment === null ? null : serialisePayment(payment),
+        actions: actions.map(serialiseAction),
+        approval: approval === null ? null : serialiseApproval(approval),
+        // Scoped to this case's payment. Metadata is written by the services
+        // themselves and never contains a credential.
+        audit: auditEvents.map((event) => ({
+          id: event.id,
+          payment_id: event.paymentId,
+          case_id: event.caseId,
+          event_type: event.eventType,
+          actor: event.actor,
+          decision: event.decision,
+          metadata: event.metadata,
+          created_at: event.createdAt.toISOString(),
+        })),
+      });
+    },
+  );
 
   /**
    * POST /api/recovery/:caseId/approve  and  /reject

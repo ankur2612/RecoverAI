@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { AUDIT_EVENT_TYPES } from '../audit/repository.ts';
 import {
   CURRENCIES,
   FAILURE_REASONS,
@@ -213,6 +214,35 @@ export const approvalDecisionSchema = z
         errorMap: () => ({ message: `expected_action must be one of ${RECOVERY_ACTIONS.join(', ')}` }),
       })
       .optional(),
+  })
+  .strict();
+
+/**
+ * GET /api/audit query parameters.
+ *
+ * Read-only and strictly bounded. `limit` is capped so a single call cannot
+ * pull the whole trail, and every filter is an exact match on an indexed or
+ * low-cardinality column — there is no free-text search that could become an
+ * expensive scan.
+ */
+export const listAuditQuerySchema = z
+  .object({
+    payment_id: identifier('payment_id').optional(),
+    case_id: identifier('case_id').optional(),
+    event_type: z
+      .enum(AUDIT_EVENT_TYPES, {
+        errorMap: () => ({ message: `event_type must be one of ${AUDIT_EVENT_TYPES.join(', ')}` }),
+      })
+      .optional(),
+    actor: z
+      .string()
+      .trim()
+      .min(1)
+      .max(64)
+      .regex(/^[A-Za-z0-9:_-]+$/, 'actor may contain only letters, digits, colon, underscore, hyphen')
+      .optional(),
+    limit: z.coerce.number().int().min(1).max(200).optional().default(50),
+    offset: z.coerce.number().int().min(0).optional().default(0),
   })
   .strict();
 

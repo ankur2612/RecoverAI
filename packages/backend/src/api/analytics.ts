@@ -7,9 +7,11 @@ import type { RecoveryProvider } from '../payments/provider.ts';
 import { runBatchRecovery, type BatchRunSummary } from '../jobs/batch-recovery.ts';
 import { getRecoveryMetrics, type RecoveryMetrics } from '../analytics/recovery-metrics.ts';
 import { sweepStrandedActions, type SweepRunSummary } from '../recovery/sweep-service.ts';
+import { listAuditEvents } from '../audit/repository.ts';
 import {
   analyticsQuerySchema,
   batchRunRequestSchema,
+  listAuditQuerySchema,
   sweepRequestSchema,
   formatZodIssues,
 } from './schemas.ts';
@@ -229,6 +231,58 @@ export async function registerAnalyticsRoutes(
     );
 
     return reply.code(200).send(serialiseSweep(summary));
+  });
+
+  /**
+   * GET /api/audit
+   *
+   * READ ONLY view of the append-only decision log.
+   *
+   * Exposing a listing cannot weaken the append-only guarantee: this module
+   * has no update or delete, and the database enforces the same rule with
+   * triggers regardless of what any route does.
+   *
+   * `metadata` is returned as stored. Every writer is a RecoverAI service that
+   * records decision codes, ids, and scrubbed messages — never a credential,
+   * never a raw provider payload. A test asserts that.
+   */
+  app.get('/api/audit', async (request, reply) => {
+    const parsed = listAuditQuerySchema.safeParse(request.query ?? {});
+    if (!parsed.success) {
+      return reply.code(400).send({
+        error: 'validation_error',
+        message: 'The audit query is invalid.',
+        issues: formatZodIssues(parsed.error),
+      });
+    }
+
+    const result = await listAuditEvents({
+      ...(parsed.data.payment_id === undefined ? {} : { paymentId: parsed.data.payment_id }),
+      ...(parsed.data.case_id === undefined ? {} : { caseId: parsed.data.case_id }),
+      ...(parsed.data.event_type === undefined ? {} : { eventType: parsed.data.event_type }),
+      ...(parsed.data.actor === undefined ? {} : { actor: parsed.data.actor }),
+      limit: parsed.data.limit,
+      offset: parsed.data.offset,
+    });
+
+    return reply.code(200).send({
+      events: result.events.map((event) => ({
+        id: event.id,
+        payment_id: event.paymentId,
+        case_id: event.caseId,
+        event_type: event.eventType,
+        actor: event.actor,
+        decision: event.decision,
+        metadata: event.metadata,
+        created_at: event.createdAt.toISOString(),
+      })),
+      // Nested to match the established list contract used by
+      // GET /api/recovery/cases and GET /api/payments. An endpoint that
+      // paginates differently from its siblings forces every consumer to
+      // special-case it, which is exactly the kind of inconsistency that
+      // produced a silent "0 cases" bug in the frontend.
+      pagination: { total: result.total, limit: parsed.data.limit, offset: parsed.data.offset },
+    });
   });
 
   /**

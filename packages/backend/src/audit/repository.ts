@@ -89,6 +89,87 @@ interface AuditRow {
   created_at: Date;
 }
 
+export interface ListAuditFilter {
+  paymentId?: string | undefined;
+  caseId?: string | undefined;
+  eventType?: AuditEventType | undefined;
+  actor?: string | undefined;
+  limit: number;
+  offset: number;
+}
+
+export interface ListAuditResult {
+  events: AuditEvent[];
+  total: number;
+}
+
+/**
+ * Paginated, filterable read over the audit trail.
+ *
+ * READ ONLY. This module has no update or delete by design, and the database
+ * enforces the same rule with triggers, so exposing a listing cannot weaken
+ * the append-only guarantee.
+ *
+ * Ordered NEWEST FIRST, unlike listAuditEventsForPayment: that one
+ * reconstructs one payment's story in sequence, while an operator scanning the
+ * whole log wants the most recent activity at the top.
+ */
+export async function listAuditEvents(
+  filter: ListAuditFilter,
+  db: Queryable = getPool(),
+): Promise<ListAuditResult> {
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+
+  if (filter.paymentId !== undefined) {
+    params.push(filter.paymentId);
+    conditions.push(`payment_id = $${params.length}`);
+  }
+  if (filter.caseId !== undefined) {
+    params.push(filter.caseId);
+    conditions.push(`case_id = $${params.length}`);
+  }
+  if (filter.eventType !== undefined) {
+    params.push(filter.eventType);
+    conditions.push(`event_type = $${params.length}`);
+  }
+  if (filter.actor !== undefined) {
+    params.push(filter.actor);
+    conditions.push(`actor = $${params.length}`);
+  }
+
+  const where = conditions.length === 0 ? '' : `WHERE ${conditions.join(' AND ')}`;
+
+  const countResult = await db.query<{ count: string }>(
+    `SELECT COUNT(*)::text AS count FROM audit_events ${where}`,
+    params,
+  );
+  const total = Number(countResult.rows[0]?.count ?? '0');
+
+  params.push(filter.limit, filter.offset);
+  const { rows } = await db.query<AuditRow>(
+    `SELECT id, payment_id, case_id, event_type, actor, decision, metadata, created_at
+     FROM audit_events ${where}
+     ORDER BY created_at DESC, id DESC
+     LIMIT $${params.length - 1} OFFSET $${params.length}`,
+    params,
+  );
+
+  return {
+    events: rows.map((row) => ({
+      id: row.id,
+      paymentId: row.payment_id,
+      caseId: row.case_id,
+      eventType: row.event_type as AuditEventType,
+      actor: row.actor,
+      decision: row.decision,
+      metadata: row.metadata,
+      createdAt: row.created_at,
+    })),
+    total,
+  };
+}
+
 export async function listAuditEventsForPayment(
   paymentId: string,
   db: Queryable = getPool(),
