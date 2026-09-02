@@ -154,7 +154,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
-      const response = await fetch(path, {
+      const response = await fetch(`${API_BASE_URL}${path}`, {
         method,
         headers,
         ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
