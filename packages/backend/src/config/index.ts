@@ -174,6 +174,19 @@ function readBool(env: Env, key: string, fallback: boolean): boolean {
   throw new ConfigError(`${key} must be one of true | false | 1 | 0, received "${raw}"`);
 }
 
+/**
+ * Whether a production deployment has explicitly acknowledged running mock
+ * providers.
+ *
+ * This exists so a hosted DEMO is still possible — a Buildathon deployment
+ * with no Razorpay account is a legitimate use — but it must be typed by a
+ * human rather than inherited from a default. The health endpoint reports the
+ * flag, so an operator can always tell which mode they are in.
+ */
+function allowMockInProduction(env: Env): boolean {
+  return readBool(env, 'ALLOW_MOCK_PROVIDERS_IN_PRODUCTION', false);
+}
+
 export function loadConfig(env: Env = process.env): AppConfig {
   const aiProvider = readEnum(
     env,
@@ -277,6 +290,44 @@ export function loadConfig(env: Env = process.env): AppConfig {
     );
   }
 
+  // Docker Compose already defaults AUTH_ENABLED to true, but a deployment
+  // that does not use Compose — a PaaS, a bare container — inherits the
+  // development default of false and would publish every route, including the
+  // batch endpoint that can contact a payment provider.
+  if (nodeEnv === 'production' && !authEnabled) {
+    throw new ConfigError(
+      'NODE_ENV=production requires AUTH_ENABLED=true. Every route except /api/health would ' +
+        'otherwise be publicly reachable, including the endpoints that execute recovery ' +
+        'actions.',
+    );
+  }
+
+  // A production deployment running the MOCK providers is the most dangerous
+  // misconfiguration this system has, and it is silent: every screen fills
+  // with recovery cases, executions, and verified outcomes that describe
+  // nothing real. An operator would have no way to tell from the product that
+  // no payment provider was ever contacted.
+  //
+  // `mock` remains the DEFAULT outside production, so tests, local
+  // development, and demos keep working with zero configuration. In
+  // production it must be typed deliberately.
+  if (nodeEnv === 'production' && paymentProvider === 'mock' && !allowMockInProduction(env)) {
+    throw new ConfigError(
+      'NODE_ENV=production with PAYMENT_PROVIDER=mock would simulate recovery actions while ' +
+        'appearing to perform them. Set PAYMENT_PROVIDER=razorpay with real credentials, or ' +
+        'set ALLOW_MOCK_PROVIDERS_IN_PRODUCTION=true to acknowledge that this deployment ' +
+        'performs no real recovery.',
+    );
+  }
+  if (nodeEnv === 'production' && aiProvider === 'mock' && !allowMockInProduction(env)) {
+    throw new ConfigError(
+      'NODE_ENV=production with AI_PROVIDER=mock serves deterministic rule-based diagnoses, ' +
+        'not model output. Set AI_PROVIDER=gemini with GEMINI_API_KEY, or set ' +
+        'ALLOW_MOCK_PROVIDERS_IN_PRODUCTION=true to acknowledge the deployment is a ' +
+        'demonstration.',
+    );
+  }
+
   // Defaults chosen to be generous for an operator dashboard and a batch run
   // while still bounding a brute-force attempt: 120/min is far more than any
   // human workflow needs and far less than a credential-guessing loop wants.
@@ -352,6 +403,10 @@ export function redactedConfig(config: AppConfig) {
     port: config.port,
     logLevel: config.logLevel,
     databaseConfigured: config.databaseUrl.length > 0,
+    // True when EITHER provider is mocked: a real payment provider with a mock
+    // AI still produces rule-based diagnoses, not model output. Derived rather
+    // than stored so it cannot drift from what the system actually does.
+    simulated: config.payments.provider === 'mock' || config.ai.provider === 'mock',
     ai: {
       provider: config.ai.provider,
       model:

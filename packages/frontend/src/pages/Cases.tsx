@@ -67,16 +67,12 @@ export function Cases() {
    * failed. Rendering 0 in those states would be a misleading number beside an
    * error, so the label is suppressed instead.
    */
-  // Optional-chained through `pagination` as well: if the API ever returns a
-  // shape without it, the count degrades to "unavailable" rather than throwing
-  // and taking the whole page down. A malformed envelope should cost a label,
-  // not the table.
+  // A malformed envelope costs a label, not the table.
   const total: number | null =
     query.isLoading || query.isError ? null : (query.data?.pagination?.total ?? null);
 
   return (
     <div className="space-y-4">
-      {/* ---- Toolbar ---- */}
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div className="flex flex-wrap items-end gap-3">
           <div>

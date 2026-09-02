@@ -126,7 +126,6 @@ export function Audit() {
 
   return (
     <div className="space-y-4">
-      {/* ---- Filters: exactly the four the backend supports ---- */}
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div className="flex flex-wrap items-end gap-3">
           <div>

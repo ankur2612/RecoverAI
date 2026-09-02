@@ -7,9 +7,7 @@ import type {
 } from '../types/domain.ts';
 
 /**
- * ============================================================================
  * STATUS SEMANTICS — THE MOST IMPORTANT UX RULE IN THE PRODUCT
- * ============================================================================
  *
  * The recovery lifecycle has FIVE distinct stages, and the interface must
  * never collapse them:
@@ -42,9 +40,6 @@ export interface StatusPresentation {
 
 const NEUTRAL: StatusPresentation = { label: 'Unknown', tone: 'neutral', icon: '○' };
 
-// ---------------------------------------------------------------------------
-// Stage 2 — POLICY
-// ---------------------------------------------------------------------------
 
 export function policyPresentation(status: PolicyDecision | null): StatusPresentation {
   switch (status) {
@@ -74,11 +69,9 @@ export function policyPresentation(status: PolicyDecision | null): StatusPresent
   }
 }
 
-// ---------------------------------------------------------------------------
 // Stage 4 — EXECUTION
 //
 // NOTE: none of these say "Recovered". That word belongs to stage 5 alone.
-// ---------------------------------------------------------------------------
 
 export function executionPresentation(status: ExecutionStatus | null): StatusPresentation {
   switch (status) {
@@ -133,9 +126,6 @@ export function executionPresentation(status: ExecutionStatus | null): StatusPre
   }
 }
 
-// ---------------------------------------------------------------------------
-// Stage 5 — VERIFICATION. The only stage that can say "recovered".
-// ---------------------------------------------------------------------------
 
 export function verificationPresentation(status: VerificationStatus | null): StatusPresentation {
   switch (status) {
@@ -171,9 +161,6 @@ export function verificationPresentation(status: VerificationStatus | null): Sta
   }
 }
 
-// ---------------------------------------------------------------------------
-// Overall case status
-// ---------------------------------------------------------------------------
 
 export function casePresentation(status: CaseStatus): StatusPresentation {
   switch (status) {
@@ -223,9 +210,6 @@ export function casePresentation(status: CaseStatus): StatusPresentation {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Derived helpers — read backend state, never invent it
-// ---------------------------------------------------------------------------
 
 /** The most recent action, which carries the current lifecycle position. */
 export function latestAction(

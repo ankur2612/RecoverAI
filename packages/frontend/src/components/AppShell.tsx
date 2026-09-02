@@ -168,7 +168,6 @@ export function AppShell({ children }: { children: ReactNode }) {
     setDrawerOpen(false);
   }, [location.pathname]);
 
-  // Escape closes the drawer, matching dialog conventions.
   useEffect(() => {
     if (!drawerOpen) return;
     const onKey = (event: KeyboardEvent) => {

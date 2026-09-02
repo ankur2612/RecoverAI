@@ -7,45 +7,13 @@ import type { BatchRun, PaymentStatus } from '../types/domain.ts';
 import { Button, Callout, SectionCard } from '../components/primitives.tsx';
 
 /**
- * ============================================================================
- * BATCH RECOVERY
- * ============================================================================
+ * The only screen that can cause provider requests across a whole population.
  *
- * THE MOST DANGEROUS SCREEN IN THE PRODUCT. It is the only place an operator
- * can cause real provider requests across a whole population in one click.
+ * `execute` is ALWAYS sent explicitly: the backend resolves it as
+ * `options.execute ?? true`, so an omitted field means EXECUTE.
  *
- * ---------------------------------------------------------------------------
- * WHY `execute: false` IS SENT EXPLICITLY, ALWAYS
- * ---------------------------------------------------------------------------
- *
- * The backend schema makes `execute` OPTIONAL, and `runBatchRecovery` resolves
- * it as `options.execute ?? true`. An omitted field therefore means EXECUTE.
- * That is a defensible server default — the route is named /runs — but it
- * makes omission the unsafe direction. So this screen never omits the field:
- * a preview sends `execute: false` on the wire, verbatim, every time.
- *
- * ---------------------------------------------------------------------------
- * WHAT PREVIEW ACTUALLY DOES — stated precisely, not reassuringly
- * ---------------------------------------------------------------------------
- *
- * A preview does NOT touch the payment provider. No charge, no reminder, no
- * retry is sent. That is the property that matters most, and a backend
- * integration test asserts the provider call count is zero for a dry run.
- *
- * But a preview is NOT read-only. It runs the real analysis pipeline, which
- * writes recovery cases and audit events to the database. Calling it "a dry
- * run that changes nothing" would be false, so this screen does not. It says
- * what is true: the provider is never contacted, and diagnosis records are
- * created.
- *
- * ---------------------------------------------------------------------------
- * NO AUTOMATIC RETRY
- * ---------------------------------------------------------------------------
- *
- * The API client refuses to retry any non-GET, the QueryClient sets
- * `mutations: { retry: false }`, and this mutation adds no retry of its own.
- * If a run fails ambiguously the operator sees the error and decides — the
- * frontend never re-sends a batch request on its own.
+ * A preview never contacts the provider, but it is not read-only — the
+ * analysis pipeline still writes recovery cases and audit events.
  */
 
 /** Statuses the backend accepts as eligible. Mirrors the backend default. */
@@ -56,7 +24,6 @@ const DEFAULT_LIMIT = 25;
 export function Batch() {
   const navigate = useNavigate();
 
-  // ---- Request fields: exactly the four in batchRunRequestSchema ----------
   const [merchantId, setMerchantId] = useState('');
   const [statuses, setStatuses] = useState<PaymentStatus[]>(['failed', 'abandoned']);
   const [limit, setLimit] = useState(DEFAULT_LIMIT);
@@ -108,7 +75,6 @@ export function Batch() {
 
   return (
     <div className="space-y-5">
-      {/* ---- What a run is, before any control is offered ---- */}
       <Callout tone="info" title="A batch run puts the whole pipeline over a population">
         Every payment is diagnosed, evaluated against policy, and — in execute mode — acted on and
         verified. RecoverAI makes no batch-level decision of its own: the policy engine authorizes
@@ -116,7 +82,6 @@ export function Batch() {
       </Callout>
 
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
-        {/* ---- Population ---- */}
         <SectionCard
           title="Population"
           description="Which payments this run considers. These are the only filters the API accepts."
@@ -190,7 +155,6 @@ export function Batch() {
           </div>
         </SectionCard>
 
-        {/* ---- Mode and actions ---- */}
         <div className="space-y-4">
           <SectionCard title="Mode">
             <div className="space-y-3 pt-1">
@@ -263,7 +227,6 @@ export function Batch() {
         </div>
       </div>
 
-      {/* ---- Errors: shown, never swallowed, never auto-retried ---- */}
       {mutation.isError && (
         <div role="alert">
           <Callout tone="danger" title="The batch run failed">
@@ -276,7 +239,6 @@ export function Batch() {
         </div>
       )}
 
-      {/* ---- Confirmation: the last gate before a real execution ---- */}
       {confirmOpen && (
         <ConfirmExecute
           statuses={statuses}

@@ -300,3 +300,21 @@ describe('risk detector — revenue at risk is from real payment data', () => {
     assert.equal(assess(payment({ status: 'refunded', failureReason: null })).revenueAtRisk, 0);
   });
 });
+
+describe('risk detection — unrecognised failure reasons', () => {
+  test('an unknown reason classifies as UNKNOWN rather than throwing', () => {
+    const assessment = assessRisk(
+      {
+        payment: { ...payment(), failureReason: 'some_reason_not_in_the_enum' } as unknown as Payment,
+        customerHistory: EMPTY_CUSTOMER_HISTORY,
+        now: NOW,
+      },
+      POLICY,
+    );
+
+    assert.equal(assessment.classification, 'UNKNOWN');
+    assert.ok(Number.isFinite(assessment.ageHours));
+    assert.ok(Number.isFinite(assessment.recoverabilityScore));
+    assert.equal(assessment.requiresHumanReview, true);
+  });
+});

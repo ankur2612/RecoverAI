@@ -82,13 +82,11 @@ export function Settings() {
 
   return (
     <div className="space-y-5">
-      {/* ---- The read-only statement, first thing on the page ---- */}
       <Callout tone="info" title="Read-only configuration">
         These values are set through environment variables and applied at startup. RecoverAI
         exposes no API for changing them, so this page displays them and nothing more.
       </Callout>
 
-      {/* ---- Recovery policy ---- */}
       <SectionCard
         title="Recovery policy"
         description="The deterministic thresholds the policy engine authorizes against. The AI cannot widen any of them."
@@ -130,7 +128,6 @@ export function Settings() {
         />
       </SectionCard>
 
-      {/* ---- Operational limits ---- */}
       <SectionCard
         title="Operational limits"
         description="HTTP-level protections. These bound abuse; they never authorize an action."
@@ -152,7 +149,6 @@ export function Settings() {
         />
       </SectionCard>
 
-      {/* ---- Providers ---- */}
       <SectionCard
         title="Providers"
         description="Configured integrations. Credential values are never returned by the API."
@@ -173,7 +169,6 @@ export function Settings() {
         />
       </SectionCard>
 
-      {/* ---- Dataset ---- */}
       <SectionCard
         title="Synthetic dataset"
         description="Generation parameters for the reproducible development dataset."

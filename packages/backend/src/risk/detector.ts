@@ -109,12 +109,13 @@ export function assessRisk(input: RiskAssessmentInput, policy: PolicyConfig): Ri
   }
 
   // ---- Classification ----------------------------------------------------
+  // An unrecognised reason falls back to UNKNOWN rather than undefined.
   let classification: Classification =
     payment.failureReason === null
       ? payment.status === 'abandoned'
         ? 'CHECKOUT_ABANDONMENT'
         : 'UNKNOWN'
-      : FAILURE_REASON_CLASSIFICATION[payment.failureReason];
+      : (FAILURE_REASON_CLASSIFICATION[payment.failureReason] ?? 'UNKNOWN');
 
   factors.push(`failure_reason=${payment.failureReason ?? 'none'}`);
 

@@ -10,6 +10,13 @@
  *
  * With no --out and no --db, it prints the summary only. Writing to the
  * database is opt-in so an accidental run cannot clobber existing data.
+ *
+ * THIS GENERATES SYNTHETIC DEVELOPMENT DATA. It is not a production tool. A
+ * production database must contain real payments ingested through the API, so
+ * `--db` REFUSES TO RUN when NODE_ENV=production: a seeded production
+ * deployment would show operators fabricated recovery cases, fabricated
+ * executions, and fabricated verified outcomes, and nothing in the product
+ * would distinguish them from real ones.
  */
 import { writeFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
@@ -113,6 +120,19 @@ async function main(): Promise<void> {
   }
 
   if (args.db) {
+    /*
+     * Refuse to seed a production database. Checked here rather than in
+     * persistDataset() so the failure names the CLI the operator actually
+     * ran, and so the library stays usable by the test suites, which set
+     * their own NODE_ENV.
+     */
+    if (config.nodeEnv === 'production') {
+      throw new Error(
+        'refusing to seed a production database. This command writes SYNTHETIC payments, ' +
+          'merchants, and ground-truth rows, which would be indistinguishable from real ' +
+          'data in the dashboard. Unset NODE_ENV=production to seed a development database.',
+      );
+    }
     const counts = await persistDataset(dataset);
     console.log(
       `\npersisted to database: ${counts.merchants} merchants, ` +

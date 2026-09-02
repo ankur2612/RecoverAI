@@ -66,6 +66,7 @@ function healthFixture(overrides: Partial<HealthResponse['config']> = {}): Healt
       port: 8080,
       logLevel: 'info',
       databaseConfigured: true,
+      simulated: true,
       ai: { provider: 'mock', credentialPresent: true },
       payments: { provider: 'mock', credentialPresent: true, mode: 'test' },
       auth: { enabled: false, credentialPresent: false },
@@ -243,6 +244,51 @@ describe('Approvals — read-only queue', () => {
 // ---------------------------------------------------------------------------
 
 describe('System Status', () => {
+  test('the simulation banner names WHICH provider is simulated', async () => {
+    // A real payment provider with a mock AI is still simulated, so the banner
+    // must not claim "no real provider is configured".
+    vi.spyOn(api, 'health').mockResolvedValue(
+      healthFixture({
+        simulated: true,
+        payments: { provider: 'razorpay', credentialPresent: true, mode: 'test' },
+        ai: { provider: 'mock', credentialPresent: true },
+      }),
+    );
+
+    const { container } = wrap(<SystemStatus />);
+    await waitFor(() => expect(container.textContent).toContain('Simulation mode'));
+
+    expect(container.textContent).toContain('one or more providers are simulated');
+    expect(container.textContent).toContain('deterministic rule-based provider');
+    // The payment provider is real, so no claim may be made about money.
+    expect(container.textContent).not.toContain('no money has moved');
+    expect(container.textContent).not.toContain('no real provider is configured');
+  });
+
+  test('a mocked payment provider states that no money moved', async () => {
+    vi.spyOn(api, 'health').mockResolvedValue(healthFixture({ simulated: true }));
+
+    const { container } = wrap(<SystemStatus />);
+    await waitFor(() => expect(container.textContent).toContain('Simulation mode'));
+
+    expect(container.textContent).toContain('no money has moved');
+  });
+
+  test('no banner appears when both providers are real', async () => {
+    vi.spyOn(api, 'health').mockResolvedValue(
+      healthFixture({
+        simulated: false,
+        payments: { provider: 'razorpay', credentialPresent: true, mode: 'test' },
+        ai: { provider: 'gemini', model: 'gemini-3.7-flash', credentialPresent: true },
+      }),
+    );
+
+    const { container } = wrap(<SystemStatus />);
+    await waitFor(() => expect(container.textContent).toContain('Operational'));
+
+    expect(container.textContent).not.toContain('Simulation mode');
+  });
+
   test('renders service, database, auth and provider posture', async () => {
     vi.spyOn(api, 'health').mockResolvedValue(healthFixture());
 

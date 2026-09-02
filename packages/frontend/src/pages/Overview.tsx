@@ -175,7 +175,6 @@ export function Overview() {
 
   return (
     <div className="space-y-6">
-      {/* ---- Hero metrics ---- */}
       <section aria-label="Key metrics" className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {analytics.isLoading || data === undefined ? (
           Array.from({ length: 4 }).map((_, index) => (
@@ -233,10 +232,8 @@ export function Overview() {
         )}
       </section>
 
-      {/* ---- What the product does, and why the figures above are trustworthy ---- */}
       <Pipeline />
 
-      {/* ---- Recovery health ---- */}
       <div className="grid gap-4 lg:grid-cols-2">
         <SectionCard
           title="Recovery health"
@@ -271,7 +268,6 @@ export function Overview() {
         </SectionCard>
       </div>
 
-      {/* ---- Recent cases ---- */}
       <SectionCard
         title="Recent recovery cases"
         description="The most recently updated diagnosed payments."

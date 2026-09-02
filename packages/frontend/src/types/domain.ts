@@ -1,7 +1,5 @@
 /**
- * ============================================================================
  * BACKEND RESPONSE TYPES
- * ============================================================================
  *
  * These mirror what the API actually returns — snake_case, verified against
  * the serialisers in packages/backend/src/api/. They are DESCRIPTIONS of
@@ -18,9 +16,6 @@
  * minor units and is only ever FORMATTED here.
  */
 
-// ---------------------------------------------------------------------------
-// Vocabulary — mirrors packages/backend/src/shared/types.ts
-// ---------------------------------------------------------------------------
 
 export type PaymentStatus =
   | 'created'
@@ -76,9 +71,6 @@ export type CaseStatus =
 
 export type ApprovalDecision = 'APPROVED' | 'REJECTED';
 
-// ---------------------------------------------------------------------------
-// Entities
-// ---------------------------------------------------------------------------
 
 export interface Payment {
   payment_id: string;
@@ -173,9 +165,6 @@ export interface AuditEvent {
   created_at: string;
 }
 
-// ---------------------------------------------------------------------------
-// Response envelopes
-// ---------------------------------------------------------------------------
 
 export interface CaseDetail {
   case: RecoveryCase;
@@ -324,6 +313,8 @@ export interface HealthResponse {
     port: number;
     logLevel: string;
     databaseConfigured: boolean;
+    /** True when either the payment or AI provider is mocked. Never a credential. */
+    simulated: boolean;
     // `model` is OMITTED from the JSON entirely when the provider is mock,
     // so it is optional rather than `string | undefined` — a consumer must
     // handle its absence, not merely a null value.

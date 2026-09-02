@@ -151,6 +151,15 @@ npm run seed -- [options]
 
 Writing to the database is opt-in, so an accidental run cannot clobber data.
 
+> **This generates SYNTHETIC development data — it is not a production tool.**
+> `--db` **refuses to run when `NODE_ENV=production`**. A seeded production
+> deployment would show operators fabricated recovery cases, fabricated
+> executions, and fabricated verified outcomes, and nothing in the product
+> would distinguish them from real ones.
+>
+> A production database is populated only by real payments ingested through
+> the API.
+
 ### Reproducibility
 
 The same seed produces a **byte-identical** dataset on every run:
@@ -283,9 +292,14 @@ Every value lives in the environment; see [.env.example](.env.example).
 | `POLICY_RETRY_COOLDOWN_SECONDS` | `3600` | Minimum gap between retries |
 | `POLICY_HIGH_VALUE_THRESHOLD` | `1000000` | At/above this, human approval |
 | `DATASET_SEED` | `42` | Reproducibility seed |
+| `ALLOW_MOCK_PROVIDERS_IN_PRODUCTION` | `false` | Acknowledges a production deployment that simulates recovery |
 
 `mock` is the default for both providers so that tests and the batch demo run
 with **no API keys, no cost, and no variance between runs**.
+
+In **production** the mock providers are refused unless
+`ALLOW_MOCK_PROVIDERS_IN_PRODUCTION=true` is set deliberately — see
+[Production deployment](#production-deployment).
 
 Selecting a real provider **without its credentials fails at startup**.
 RecoverAI never silently falls back to a mock: a deployment must not appear to
@@ -1016,6 +1030,93 @@ database). Verified there, not merely asserted:
 | `UPDATE` on `audit_events` raises `append-only` | Verified |
 | `DELETE` on `audit_events` raises `append-only` | Verified |
 | Orphan foreign keys rejected | Verified |
+
+---
+
+## Production deployment
+
+A new deployment **starts empty**. Migrations create the schema and nothing
+else; no startup path seeds data, and no migration contains an `INSERT`. All
+three properties are covered by tests.
+
+### 1. Configure PostgreSQL and run migrations
+
+```bash
+DATABASE_URL=postgresql://user:password@host:5432/recoverai npm run migrate
+```
+
+### 2. Set environment variables in your host's secret store
+
+Never commit them. At minimum:
+
+```
+NODE_ENV=production
+DATABASE_URL=postgresql://user:password@host:5432/recoverai
+AUTH_ENABLED=true
+API_AUTH_TOKEN=            # openssl rand -hex 32
+PAYMENT_PROVIDER=razorpay
+RAZORPAY_KEY_ID=           # rzp_test_… — live keys are refused
+RAZORPAY_KEY_SECRET=
+AI_PROVIDER=gemini
+GEMINI_API_KEY=
+```
+
+### 3. What production refuses to start with
+
+`loadConfig()` fails fast rather than starting in a state that looks healthy
+but is not:
+
+| Condition | Why it is refused |
+| --- | --- |
+| `DATABASE_URL` unset | Would silently use the development database URL |
+| `AUTH_ENABLED=false` | Every route becomes public, including batch execution |
+| `AUTH_ENABLED=true` with no/short token | Looks protected while comparing against nothing |
+| `PAYMENT_PROVIDER=mock` | Would **simulate** recovery while appearing to perform it |
+| `AI_PROVIDER=mock` | Serves deterministic stubs, not model output |
+| A real provider without its credential | Never falls back to a mock |
+| `RAZORPAY_KEY_ID=rzp_live_…` | This system must never point at real money |
+
+**Demonstration deployments.** A hosted demo with no Razorpay account is
+legitimate, but it must be acknowledged deliberately:
+
+```
+ALLOW_MOCK_PROVIDERS_IN_PRODUCTION=true
+```
+
+`GET /api/health` then reports `simulated: true`, and the dashboard shows a
+simulation banner on System Status, so the state is always visible.
+
+### 4. Deploy and verify
+
+```bash
+npm run build
+node packages/backend/dist/index.js        # backend
+curl https://your-host/api/health          # expects {"status":"ok"}
+```
+
+The frontend is a static bundle (`npm run build --workspace @recoverai/frontend`)
+served from any static host. Point `/api` at the backend via your CDN or reverse
+proxy — the browser never holds a provider credential.
+
+### 5. Do not seed production
+
+`npm run seed -- --db` refuses when `NODE_ENV=production`. There is no
+deployment step that populates data.
+
+---
+
+## Demo and development data
+
+Production is **never** seeded automatically. To populate a **development**
+database with the reproducible synthetic dataset:
+
+```bash
+npm run seed -- --db          # 1,000 records from seed 42
+npm run seed -- --summary-only  # print the composition, write nothing
+```
+
+See [Dataset CLI](#dataset-cli). This tooling exists for local development,
+tests, and the evaluation harness — not for production.
 
 ---
 

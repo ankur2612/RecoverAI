@@ -46,7 +46,6 @@ export function PaymentDetail() {
     enabled: paymentId !== undefined,
   });
 
-  // Step 1: find a case id, if this payment ever produced one.
   const auditQuery = useQuery({
     queryKey: ['payment-audit', paymentId],
     queryFn: ({ signal }) => api.listAudit({ payment_id: paymentId!, limit: 200 }, signal),
@@ -56,7 +55,6 @@ export function PaymentDetail() {
   const caseId =
     auditQuery.data?.events.find((event) => event.case_id !== null)?.case_id ?? null;
 
-  // Step 2: load the full case only when one actually exists.
   const caseQuery = useQuery({
     queryKey: ['case', caseId],
     queryFn: ({ signal }) => api.getCase(caseId!, signal),
@@ -95,7 +93,6 @@ export function PaymentDetail() {
         ← Back to payments
       </Link>
 
-      {/* ---- Header ---- */}
       <div className="rounded-xl border border-line bg-surface px-5 py-4 shadow-[0_1px_2px_rgba(16,24,40,0.04)]">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0">
@@ -118,7 +115,6 @@ export function PaymentDetail() {
         </div>
       </div>
 
-      {/* ---- Payment information ---- */}
       <SectionCard
         title="Payment information"
         description="As recorded when the payment event was ingested."
@@ -141,7 +137,6 @@ export function PaymentDetail() {
         </dl>
       </SectionCard>
 
-      {/* ---- Recovery information ---- */}
       <SectionCard
         title="Recovery"
         description="Whether RecoverAI has diagnosed and acted on this payment."

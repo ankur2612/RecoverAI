@@ -94,7 +94,6 @@ export function SystemStatus() {
 
   return (
     <div className="space-y-5">
-      {/* ---- Headline ---- */}
       <div className="rounded-xl border border-line bg-surface px-5 py-4 shadow-[0_1px_2px_rgba(16,24,40,0.04)]">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
@@ -118,7 +117,6 @@ export function SystemStatus() {
         </div>
       </div>
 
-      {/* ---- Service and database ---- */}
       <div className="grid gap-4 lg:grid-cols-2">
         <SectionCard title="Service" description="The RecoverAI backend process.">
           <StatusRow
@@ -171,7 +169,6 @@ export function SystemStatus() {
         </SectionCard>
       </div>
 
-      {/* ---- Security posture ---- */}
       <SectionCard
         title="Security posture"
         description="How this deployment is protected. Values are never shown — only whether they are set."
@@ -212,7 +209,26 @@ export function SystemStatus() {
         />
       </SectionCard>
 
-      {/* ---- Providers ---- */}
+      {/*
+        Stated before the provider list: an operator reading a dashboard full of
+        executions and verified outcomes has no other way to know they are
+        simulated. Either provider being mocked is enough, so the text names
+        which one rather than implying both.
+      */}
+      {config.simulated && (
+        <Callout tone="attention" title="Simulation mode — one or more providers are simulated">
+          {config.payments.provider === 'mock' && (
+            <>
+              Recovery actions are simulated: nothing shown as executed or verified reached a
+              payment provider, and no money has moved.{' '}
+            </>
+          )}
+          {config.ai.provider === 'mock' && (
+            <>Diagnoses come from a deterministic rule-based provider, not a model.</>
+          )}
+        </Callout>
+      )}
+
       <SectionCard
         title="Providers"
         description="Which integrations this deployment is configured to use."

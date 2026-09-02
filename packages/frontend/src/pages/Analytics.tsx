@@ -141,7 +141,6 @@ export function Analytics() {
 
   return (
     <div className="space-y-6">
-      {/* ---- Merchant scope ---- */}
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <label
@@ -163,7 +162,6 @@ export function Analytics() {
         </Button>
       </div>
 
-      {/* ---- Recovery summary ---- */}
       <section aria-label="Recovery summary" className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {query.isLoading || data === undefined ? (
           Array.from({ length: 4 }).map((_, index) => (
@@ -201,7 +199,6 @@ export function Analytics() {
         )}
       </section>
 
-      {/* ---- The measurement definition, stated on the page ---- */}
       {data !== undefined && (
         <SectionCard title="How recovery is measured">
           <p className="text-[13px] leading-relaxed text-ink-muted">
@@ -239,7 +236,6 @@ export function Analytics() {
         </SectionCard>
       )}
 
-      {/* ---- Distributions over real aggregates ---- */}
       {query.isLoading ? (
         <div className="grid gap-4 lg:grid-cols-2">
           <Skeleton className="h-56 w-full rounded-xl" />

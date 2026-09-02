@@ -15,27 +15,14 @@ import type {
 } from '../types/domain.ts';
 
 /**
- * ============================================================================
- * THE RECOVERAI API CLIENT
- * ============================================================================
+ * The only place in the frontend that talks to the network.
  *
- * The ONLY place in the frontend that talks to the network.
+ * The browser never holds a provider credential; every privileged operation
+ * goes through the backend, which re-evaluates policy before anything moves.
  *
- * SECURITY MODEL
- *
- *   Browser -> this client -> authenticated backend -> policy/executor/verifier
- *
- * The browser never holds a Razorpay secret, a Gemini key, or a database URL,
- * and never calls a payment provider directly. Every privileged operation goes
- * through the backend, which re-evaluates policy before anything moves money.
- *
- * THE RETRY RULE
- *
- * Read-only GETs may be retried — they cannot cause an effect. Financial POSTs
- * NEVER are. An auto-retried /execute could produce a second provider request,
- * and while the backend's idempotency key would very likely refuse it, the
- * frontend must not lean on that: the correct answer to an ambiguous write is
- * to stop and show the operator, not to try again.
+ * THE RETRY RULE: GETs may be retried, financial POSTs never. An auto-retried
+ * /execute could produce a second provider request, and the correct answer to
+ * an ambiguous write is to stop and show the operator, not to try again.
  */
 
 /** Requests that must never be retried automatically. */
@@ -94,9 +81,6 @@ export class AbortedError extends Error {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Token handling
-// ---------------------------------------------------------------------------
 
 const TOKEN_KEY = 'recoverai.token';
 
@@ -132,14 +116,10 @@ export const tokenStore = {
     try {
       sessionStorage.removeItem(TOKEN_KEY);
     } catch {
-      // Nothing to do.
     }
   },
 };
 
-// ---------------------------------------------------------------------------
-// Core request
-// ---------------------------------------------------------------------------
 
 interface RequestOptions {
   method?: string;
@@ -236,12 +216,8 @@ function query(params: Record<string, string | number | undefined>): string {
   return encoded === '' ? '' : `?${encoded}`;
 }
 
-// ---------------------------------------------------------------------------
-// The typed surface — one method per backend route
-// ---------------------------------------------------------------------------
 
 export const api = {
-  // ---- reads (retryable) -------------------------------------------------
 
   health: (signal?: AbortSignal) =>
     request<HealthResponse>('/api/health', signal === undefined ? {} : { signal }),

@@ -12,9 +12,6 @@ export function cx(...parts: (string | false | null | undefined)[]): string {
   return parts.filter(Boolean).join(' ');
 }
 
-// ---------------------------------------------------------------------------
-// StatusBadge
-// ---------------------------------------------------------------------------
 
 /**
  * A status pill.
@@ -49,9 +46,6 @@ export function StatusBadge({
   );
 }
 
-// ---------------------------------------------------------------------------
-// Cards
-// ---------------------------------------------------------------------------
 
 export function SectionCard({
   title,
@@ -172,9 +166,6 @@ export function Field({
   );
 }
 
-// ---------------------------------------------------------------------------
-// States
-// ---------------------------------------------------------------------------
 
 export function Skeleton({ className }: { className?: string }) {
   return (
@@ -260,9 +251,6 @@ export function ErrorState({
   );
 }
 
-// ---------------------------------------------------------------------------
-// Callout — used for the safety messages that must never be missed
-// ---------------------------------------------------------------------------
 
 export function Callout({
   tone,

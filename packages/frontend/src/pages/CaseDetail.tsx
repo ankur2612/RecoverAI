@@ -25,9 +25,7 @@ import {
 import type { Approval, AuditEvent, RecoveryActionRecord, RecoveryCase } from '../types/domain.ts';
 
 /**
- * ============================================================================
  * CASE DETAIL — the screen the whole product rests on
- * ============================================================================
  *
  * It renders FIVE SEPARATE STAGES and never merges them:
  *
@@ -80,9 +78,6 @@ function Stage({
   );
 }
 
-// ---------------------------------------------------------------------------
-// Stage 1 — AI DIAGNOSIS
-// ---------------------------------------------------------------------------
 
 function DiagnosisCard({ recoveryCase }: { recoveryCase: RecoveryCase }) {
   return (
@@ -116,9 +111,6 @@ function DiagnosisCard({ recoveryCase }: { recoveryCase: RecoveryCase }) {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Stage 2 — POLICY
-// ---------------------------------------------------------------------------
 
 function PolicyCard({ action }: { action: RecoveryActionRecord | null }) {
   const presentation = policyPresentation(action?.policy_status ?? null);
@@ -154,9 +146,6 @@ function PolicyCard({ action }: { action: RecoveryActionRecord | null }) {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Stage 3 — HUMAN APPROVAL
-// ---------------------------------------------------------------------------
 
 function ApprovalCard({
   recoveryCase,
@@ -228,9 +217,6 @@ function ApprovalCard({
   );
 }
 
-// ---------------------------------------------------------------------------
-// Stage 4 — EXECUTION
-// ---------------------------------------------------------------------------
 
 function ExecutionCard({ action }: { action: RecoveryActionRecord | null }) {
   const presentation = executionPresentation(action?.execution_status ?? null);
@@ -284,9 +270,6 @@ function ExecutionCard({ action }: { action: RecoveryActionRecord | null }) {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Stage 5 — VERIFICATION. The financial truth layer.
-// ---------------------------------------------------------------------------
 
 function VerificationCard({ action }: { action: RecoveryActionRecord | null }) {
   const status = action?.verification_status ?? null;
@@ -356,9 +339,6 @@ function VerificationCard({ action }: { action: RecoveryActionRecord | null }) {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Audit timeline
-// ---------------------------------------------------------------------------
 
 function AuditTimeline({ events }: { events: AuditEvent[] }) {
   if (events.length === 0) {
@@ -401,9 +381,6 @@ function AuditTimeline({ events }: { events: AuditEvent[] }) {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Page
-// ---------------------------------------------------------------------------
 
 export function CaseDetail() {
   const { caseId } = useParams<{ caseId: string }>();
@@ -446,7 +423,6 @@ export function CaseDetail() {
         ← Back to cases
       </Link>
 
-      {/* ---- Header ---- */}
       <div className="rounded-xl border border-line bg-surface px-5 py-4 shadow-[0_1px_2px_rgba(16,24,40,0.04)]">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0">
@@ -487,7 +463,6 @@ export function CaseDetail() {
         )}
       </div>
 
-      {/* ---- The lifecycle ---- */}
       <div>
         <h2 className="mb-3 text-[13px] font-semibold uppercase tracking-wide text-ink-subtle">
           Recovery lifecycle
@@ -511,7 +486,6 @@ export function CaseDetail() {
         </div>
       </div>
 
-      {/* ---- Final outcome ---- */}
       {recovered && (
         <Callout tone="verified" title="Recovered">
           This case is recorded as recovered because provider evidence verified the outcome —
@@ -519,7 +493,6 @@ export function CaseDetail() {
         </Callout>
       )}
 
-      {/* ---- Audit ---- */}
       <SectionCard
         title="Audit trail"
         description="Every decision recorded for this payment, newest first."

@@ -2,30 +2,14 @@ import { useSyncExternalStore } from 'react';
 import type { BatchRun, SweepRun } from '../types/domain.ts';
 
 /**
- * ============================================================================
- * SESSION-ONLY RUN RESULTS
- * ============================================================================
+ * Holds the last batch and sweep response in memory for this tab.
  *
- * THE BACKEND DOES NOT PERSIST RUNS.
+ * The backend persists no run summaries — there is no runs or sweeps table,
+ * and neither handler writes one. The *effects* of a run are rows (cases,
+ * actions, audit events); the summary exists only in the HTTP response.
  *
- * There is no runs table and no sweeps table in any migration, and neither
- * POST handler writes one. `POST /api/recovery/runs` and
- * `POST /api/recovery/sweep` compute a summary in memory and return it. The
- * *effects* of a run are persisted — recovery cases, actions, and audit events
- * are rows, and the Audit Log is the durable record of them — but the run
- * SUMMARY itself exists only in the HTTP response.
- *
- * So this module holds the last response of each kind in MEMORY, for this tab,
- * for as long as it stays open.
- *
- * DELIBERATELY NOT localStorage OR sessionStorage. Writing a run summary to
- * browser storage would make it survive a reload, which is exactly the
- * impression that would be false: the operator would see a "last run" that the
- * backend has no record of and cannot reproduce. A summary that disappears on
- * reload is the honest representation of a summary the server did not keep.
- *
- * The screens that read this store must say so on the page — see
- * SESSION_ONLY_NOTICE.
+ * DELIBERATELY NOT localStorage: surviving a reload would imply backend
+ * history that does not exist. Disappearing is the honest representation.
  */
 
 /** The sentence every screen showing one of these results must display. */

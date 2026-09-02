@@ -13,36 +13,16 @@ import {
 } from '../components/primitives.tsx';
 
 /**
- * ============================================================================
- * BATCH RESULTS
- * ============================================================================
+ * There is no batch history and this screen does not pretend otherwise.
  *
- * THERE IS NO BATCH HISTORY, AND THIS SCREEN DOES NOT PRETEND OTHERWISE.
+ * No runs table exists; /api/recovery/runs computes a summary and returns it.
+ * The only result anywhere is the one held in memory for this tab, so a reload
+ * shows an honest empty state rather than a fabricated previous run. Nothing
+ * is written to localStorage to fake persistence. The audit log is the durable
+ * record.
  *
- * No migration creates a runs table, and the /api/recovery/runs handler writes
- * no run row — it computes a summary and returns it. So the only batch result
- * that exists anywhere is the one in the HTTP response the operator just
- * received, held in memory by `sessionRuns` for this tab.
- *
- * This screen therefore:
- *   - renders ONLY fields the API actually returned
- *   - labels the result "Current session result", never "Recent runs"
- *   - shows an honest empty state after a reload, rather than a fabricated
- *     previous run
- *   - does not write to localStorage to fake persistence
- *
- * The durable record of what a run DID is the audit log, which is backed by an
- * append-only table. This page links there rather than inventing a history of
- * its own.
- *
- * ---------------------------------------------------------------------------
- * MONEY
- * ---------------------------------------------------------------------------
- *
- * `amount_at_risk` and `amount_recovered` are the BACKEND's own totals, in
- * minor units. They are passed to formatMoney exactly once and never summed,
- * re-derived, or reconciled here. `amount_recovered` is non-zero only for
- * items the backend marked RECOVERED, which requires a VERIFIED verdict.
+ * `amount_at_risk` and `amount_recovered` are the backend's own totals in
+ * minor units, formatted exactly once and never re-derived here.
  */
 
 /*
@@ -89,12 +69,10 @@ export function BatchResults() {
 
   return (
     <div className="space-y-5">
-      {/* ---- The session-only statement, before any figure ---- */}
       <Callout tone="attention" title="Current session result — not stored by the backend">
         {SESSION_ONLY_NOTICE}
       </Callout>
 
-      {/* ---- Which mode produced this ---- */}
       <div className="rounded-xl border border-line bg-surface px-5 py-4 shadow-[0_1px_2px_rgba(16,24,40,0.04)]">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0">
@@ -153,7 +131,6 @@ export function BatchResults() {
         </div>
       </div>
 
-      {/* ---- Money: the backend's own totals, formatted once ---- */}
       <div className="grid gap-4 sm:grid-cols-2">
         <MetricCard
           label="Amount at risk"
@@ -168,7 +145,6 @@ export function BatchResults() {
         />
       </div>
 
-      {/* ---- Counts, exactly as returned ---- */}
       <SectionCard
         title="Counts"
         description="Every figure below is returned by the API. None is derived in the browser."
@@ -186,7 +162,6 @@ export function BatchResults() {
         </dl>
       </SectionCard>
 
-      {/* ---- Per-payment items ---- */}
       <SectionCard
         title={`Payments (${batch.items.length.toLocaleString('en-IN')})`}
         description="One row per payment the run considered, with the verdict each stage produced."

@@ -1,9 +1,7 @@
 import type { StatusPresentation } from './status.ts';
 
 /**
- * ============================================================================
  * BATCH AND SWEEP OUTCOME SEMANTICS
- * ============================================================================
  *
  * The same rule that governs a single case governs a batch item:
  *

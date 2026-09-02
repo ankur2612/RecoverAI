@@ -16,38 +16,18 @@ import {
 import type { SweepRun } from '../types/domain.ts';
 
 /**
- * ============================================================================
- * THE SWEEPER — CRASH RECOVERY
- * ============================================================================
+ * Crash recovery. THE SWEEPER NEVER EXECUTES ANYTHING.
  *
- * THE ONE RULE: THE SWEEPER NEVER EXECUTES ANYTHING.
+ * A crash leaves an action in PENDING or EXECUTING; re-sending an EXECUTING
+ * one could charge a customer twice. The backend resolves by OBSERVATION
+ * (getPaymentStatus, a read) and has no import path to the executor.
  *
- * A crash can leave a recovery action in PENDING (key claimed, provider not
- * called) or EXECUTING (request in flight, provider MAY have acted). EXECUTING
- * is the dangerous one: re-sending it could charge a customer twice for a
- * single recovery attempt.
+ * So this screen offers exactly one control. No force-retry, no re-execute,
+ * no per-item action — no such capability exists, and a control implying one
+ * would misrepresent what the button does. An action the provider cannot
+ * account for stays UNCONFIRMED.
  *
- * So the backend sweeper resolves by OBSERVATION. It calls getPaymentStatus —
- * a read — and lets what the provider reports decide the recorded execution
- * status. It has no import path to the executor and never calls
- * executeAction; backend architecture tests enforce both at the import level.
- *
- * This screen must not undermine that. It therefore offers exactly ONE
- * control: run a sweep, with the two parameters the API accepts. There is no
- * force-retry, no re-execute, no "resolve as success", and no per-item action
- * of any kind — because no such capability exists, and a control implying one
- * would be a lie about what the button does.
- *
- * An action the provider cannot account for stays UNCONFIRMED. That is the
- * correct outcome, not a failure to be worked around.
- *
- * ---------------------------------------------------------------------------
- * SESSION-ONLY RESULTS
- * ---------------------------------------------------------------------------
- *
- * As with batch runs, no sweeps table exists and the handler writes no run
- * row. The summary lives in memory for this tab only; the durable record of
- * what a sweep resolved is the audit log.
+ * Results are session-only: no sweeps table exists. The audit log is durable.
  */
 
 /** Backend default, restated so the field is never blank. */
@@ -73,13 +53,11 @@ export function Sweeper() {
 
   return (
     <div className="space-y-5">
-      {/* ---- The safety statement, above every control ---- */}
       <Callout tone="info" title="No blind retry">
         {SWEEPER_RESOLVES_BY_OBSERVATION}
       </Callout>
 
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
-        {/* ---- What the sweeper is for ---- */}
         <SectionCard
           title="What a sweep does"
           description="Crash recovery for actions left in a non-terminal state."
@@ -104,7 +82,6 @@ export function Sweeper() {
           </div>
         </SectionCard>
 
-        {/* ---- Parameters and the single control ---- */}
         <div className="space-y-4">
           <SectionCard
             title="Parameters"
@@ -187,7 +164,6 @@ export function Sweeper() {
         </div>
       )}
 
-      {/* ---- Results ---- */}
       {sweep === null ? (
         <SectionCard>
           <EmptyState

@@ -173,7 +173,6 @@ export function Approvals() {
 
   return (
     <div className="space-y-6">
-      {/* ---- Queue metrics ---- */}
       <section aria-label="Approval queue" className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
         {awaiting.isLoading ? (
           Array.from({ length: 3 }).map((_, index) => (
@@ -220,14 +219,12 @@ export function Approvals() {
         )}
       </section>
 
-      {/* ---- The boundary, stated where decisions are reviewed ---- */}
       <Callout tone="info" title="Approval is not authorization">
         {APPROVAL_IS_NOT_EXECUTION} This screen is read-only: decisions are recorded through the
         API, and the deterministic policy engine remains the sole authority on whether an action
         may run.
       </Callout>
 
-      {/* ---- The queue ---- */}
       <SectionCard
         title="Awaiting approval"
         description="Cases the policy engine gated pending a human decision."
@@ -334,7 +331,6 @@ export function Approvals() {
         )}
       </SectionCard>
 
-      {/* ---- Decided ---- */}
       <div className="grid gap-4 lg:grid-cols-2">
         <DecidedSection
           title="Approved"
