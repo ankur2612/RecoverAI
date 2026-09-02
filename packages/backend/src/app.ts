@@ -1,4 +1,5 @@
 import Fastify, { type FastifyInstance, type FastifyError } from 'fastify';
+import cors from '@fastify/cors';
 import { loadConfig, type AppConfig } from './config/index.ts';
 import { registerAuth } from './api/auth.ts';
 import { registerRateLimit } from './api/rate-limit.ts';
@@ -51,6 +52,11 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     // Never echo an unbounded request body back to the client on error.
     bodyLimit: 1_048_576,
   });
+  await app.register(cors, {
+  origin: process.env.FRONTEND_URL ?? false,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+});
 
   // Rate limiting BEFORE authentication, so a flood of credential guesses is
   // throttled without each one reaching the token comparison. Both are
