@@ -20,21 +20,27 @@ interface NavItem {
   pending?: boolean;
 }
 
+/**
+ * Primary navigation — the recovery lifecycle, in the order an operator walks
+ * it: what happened, what was diagnosed, what needs a decision, how it landed.
+ *
+ * Batch Recovery, Batch Results, Sweeper, and System Status are deliberately
+ * ABSENT from the sidebar rather than removed: they are operator tooling whose
+ * detail obscures the product story for a first-time visitor. Their routes,
+ * components, and tests are untouched, so /batch, /batch/results, /sweeper and
+ * /status all still resolve when opened directly.
+ */
 const PRIMARY_NAV: NavItem[] = [
   { label: 'Overview', to: '/', icon: '◫' },
+  { label: 'Payments', to: '/payments', icon: '₹' },
   { label: 'Recovery Cases', to: '/cases', icon: '◧' },
   { label: 'Approvals', to: '/approvals', icon: '⏸' },
-  { label: 'Batch Recovery', to: '/batch', icon: '⇉' },
-  { label: 'Batch Results', to: '/batch/results', icon: '▤' },
-  { label: 'Payments', to: '/payments', icon: '₹' },
   { label: 'Analytics', to: '/analytics', icon: '◔' },
   { label: 'Audit Log', to: '/audit', icon: '☰' },
-  { label: 'Sweeper', to: '/sweeper', icon: '↻' },
 ];
 
 const SECONDARY_NAV: NavItem[] = [
   { label: 'Settings', to: '/settings', icon: '⚙' },
-  { label: 'System Status', to: '/status', icon: '◈' },
 ];
 
 /** Page titles and descriptions, keyed by route. */
@@ -184,8 +190,7 @@ function DemoBanner() {
           Demo Mode
         </span>
         <span className="text-ink-muted">
-          Using simulated payment data. No real payments, customers, or Razorpay accounts are
-          involved, and no recovery action leaves this environment.
+          Simulated payment data only. No real money or payment accounts are involved.
         </span>
       </div>
     </div>

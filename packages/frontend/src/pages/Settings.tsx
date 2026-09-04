@@ -3,6 +3,7 @@ import { api, ApiError } from '../api/client.ts';
 import { formatMoney } from '../lib/format.ts';
 import {
   Callout,
+  cx,
   ErrorState,
   SectionCard,
   Skeleton,
@@ -78,123 +79,98 @@ export function Settings() {
   }
 
   const { config } = query.data!;
-  const { policy, rateLimit, dataset } = config;
+  const { policy } = config;
+  const healthy = query.data!.status === 'ok';
 
   return (
     <div className="space-y-5">
-      <Callout tone="info" title="Read-only configuration">
-        These values are set through environment variables and applied at startup. RecoverAI
-        exposes no API for changing them, so this page displays them and nothing more.
-      </Callout>
+      {config.demoMode === true && (
+        <div className="rounded-xl border border-verified/30 bg-verified/[0.07] p-4">
+          <div className="flex items-center gap-2">
+            <span aria-hidden="true" className="h-2 w-2 rounded-full bg-verified" />
+            <p className="text-[13px] font-semibold text-ink">Demo Mode active</p>
+          </div>
+          <p className="mt-1.5 text-[12.5px] leading-relaxed text-ink-muted">
+            This demo uses simulated payment data. No real payments, customers, Razorpay
+            accounts, or money transfers are involved.
+          </p>
+        </div>
+      )}
+
+      <SectionCard title="System status">
+        <div className="flex items-center gap-2 py-1">
+          <span
+            aria-hidden="true"
+            className={cx('h-2 w-2 rounded-full', healthy ? 'bg-verified' : 'bg-attention')}
+          />
+          <p className="text-[13px] font-medium text-ink">
+            {healthy ? 'Operational' : 'Degraded'}
+          </p>
+        </div>
+        <p className="pb-1 text-[12.5px] text-ink-muted">
+          {healthy
+            ? 'All RecoverAI services are running normally.'
+            : 'Some services are not responding normally.'}
+        </p>
+      </SectionCard>
 
       <SectionCard
         title="Recovery policy"
-        description="The deterministic thresholds the policy engine authorizes against. The AI cannot widen any of them."
+        description="The limits every recovery action is checked against."
       >
         <ConfigRow
           label="Maximum retry attempts"
           value={String(policy.maxRetryAttempts)}
-          description="Hard ceiling on automated retries per payment. Exceeding it blocks the action outright."
+          description="Maximum automatic retry attempts allowed per payment."
         />
         <ConfigRow
           label="Automated amount limit"
           value={formatMoney(policy.maxAutomatedAmount)}
-          description="Above this, an action is gated on human approval rather than executed automatically."
+          description="Above this amount, recovery needs human approval."
         />
         <ConfigRow
-          label="High-value threshold"
+          label="High-value approval threshold"
           value={formatMoney(policy.highValueThreshold)}
-          description="At or above this amount a human must approve before anything executes."
+          description="At or above this amount, a human must approve first."
         />
         <ConfigRow
-          label="Minimum confidence"
+          label="Minimum AI confidence"
           value={`${(policy.minRecoveryConfidence * 100).toFixed(0)}%`}
-          description="AI confidence below this is never auto-executed."
+          description="Recommendations below this are never run automatically."
         />
         <ConfigRow
           label="Retry cooldown"
           value={formatDuration(policy.retryCooldownSeconds)}
-          description="Minimum interval between successive retries of the same payment."
+          description="Minimum wait between retries of the same payment."
         />
         <ConfigRow
           label="Recovery window"
           value={`${policy.recoveryWindowHours}h`}
-          description="Checkout recovery is only valid within this window of the payment being created."
-        />
-        <ConfigRow
-          label="Reminders per payment"
-          value={String(policy.maxRemindersPerPayment)}
-          description="Cap on reminder messages sent for one payment before approval is required."
+          description="How long after a payment recovery may still be attempted."
         />
       </SectionCard>
 
-      <SectionCard
-        title="Operational limits"
-        description="HTTP-level protections. These bound abuse; they never authorize an action."
-      >
-        <ConfigRow
-          label="Rate limiting"
-          value={rateLimit.enabled ? 'Enabled' : 'Disabled'}
-          description="Bounds how many requests one client may make. A brute-force guard, not authorization."
-        />
-        <ConfigRow
-          label="Request limit"
-          value={`${rateLimit.max} / ${Math.round(rateLimit.windowMs / 1000)}s`}
-          description="Per client IP. In-process only — N replicas permit N times this limit."
-        />
-        <ConfigRow
-          label="API authentication"
-          value={config.auth.enabled ? 'Enabled' : 'Disabled'}
-          description="Controls who may call the API. It never decides which recovery actions are permitted."
-        />
-      </SectionCard>
-
-      <SectionCard
-        title="Providers"
-        description="Configured integrations. Credential values are never returned by the API."
-      >
+      {/*
+        Providers, stated as capability rather than implementation. The section
+        keeps the product's core claim — the AI recommends and never authorizes
+        — which is the one thing a reader of this page must not miss.
+      */}
+      <SectionCard title="Providers">
         <ConfigRow
           label="AI provider"
-          value={config.ai.provider}
-          description={
-            config.ai.model === undefined
-              ? 'Produces the diagnosis. It recommends only — it can never authorize or execute.'
-              : `Model ${config.ai.model}. It recommends only — it can never authorize or execute.`
-          }
+          value="Active"
+          description="Recovery Engine. It recommends only — it can never authorize or execute."
         />
         <ConfigRow
-          label="Payment provider"
-          value={`${config.payments.provider} (${config.payments.mode})`}
-          description="Performs recovery actions. RecoverAI refuses to start with live credentials."
+          label="Payment processing"
+          value={config.demoMode === true ? 'Demo environment' : 'Active'}
+          description="Carries out approved recovery actions."
         />
       </SectionCard>
 
-      <SectionCard
-        title="Synthetic dataset"
-        description="Generation parameters for the reproducible development dataset."
-      >
-        <ConfigRow
-          label="Seed"
-          value={String(dataset.seed)}
-          description="The same seed produces a byte-identical dataset on every run."
-        />
-        <ConfigRow
-          label="Record count"
-          value={dataset.recordCount.toLocaleString('en-IN')}
-          description="Payments generated per run."
-        />
-        <ConfigRow
-          label="Evaluation split"
-          value={`${(dataset.evalSplit * 100).toFixed(0)}%`}
-          description="Fraction held out for scoring model quality against ground truth."
-        />
-      </SectionCard>
-
-      <p className="text-[12px] leading-relaxed text-ink-subtle">
-        Changing any of these requires updating the environment and restarting the service.
-        Policy values are deliberately configuration rather than code so they can be tuned
-        without changing the engine that enforces them.
-      </p>
+      <Callout tone="info" title="Read-only configuration">
+        These values are set when the service starts and cannot be changed from this page.
+      </Callout>
     </div>
   );
 }

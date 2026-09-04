@@ -11,6 +11,10 @@ build/
 .env
 .env.*
 !.env.example
+*.pem
+*.key
+*.p12
+*.pfx
 
 # Generated datasets (reproducible from a seed; not source)
 data/generated/
