@@ -52,11 +52,27 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     // Never echo an unbounded request body back to the client on error.
     bodyLimit: 1_048_576,
   });
+  // CORS is registered FIRST, before the rate limiter and the auth hook.
+  //
+  // A preflight OPTIONS request carries no credentials by definition, so if
+  // authentication ran first every cross-origin call would fail at the
+  // preflight with a 401 that the browser reports only as an opaque CORS
+  // error. Registering cors first lets it answer preflights directly.
+  //
+  // The origin list is an exact-match allowlist from config (CORS_ORIGINS),
+  // never a wildcard: this API is credentialed, and `*` would let any page an
+  // operator visits read authenticated responses.
   await app.register(cors, {
-  origin: process.env.FRONTEND_URL ?? false,
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-});
+    origin: config.corsOrigins.length === 0 ? false : config.corsOrigins,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    // Both accepted credential headers (see api/auth.ts), plus the headers the
+    // frontend actually sends. A header absent here is stripped by the browser.
+    allowedHeaders: ['Content-Type', 'Accept', 'Authorization', 'x-api-key'],
+    // The token travels in a header, not a cookie, so credentialed mode is
+    // unnecessary — and enabling it would forbid ever relaxing the origin list.
+    credentials: false,
+    maxAge: 86_400,
+  });
 
   // Rate limiting BEFORE authentication, so a flood of credential guesses is
   // throttled without each one reaching the token comparison. Both are
