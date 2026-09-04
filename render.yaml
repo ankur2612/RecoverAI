@@ -30,7 +30,9 @@ services:
     # start and the old instance keeps serving instead of one with a missing
     # schema. The runner is idempotent (schema_migrations), so restarts and
     # scale-ups re-run it harmlessly.
-    startCommand: node packages/backend/dist/db/migrate.js && node packages/backend/dist/index.js
+    # The demo step between them is a no-op unless DEMO_MODE=true, and exits 0
+    # even on failure, so it never blocks startup.
+    startCommand: node packages/backend/dist/db/migrate.js && node packages/backend/dist/datasets/demo-cli.js && node packages/backend/dist/index.js
     healthCheckPath: /api/health
     envVars:
       - key: NODE_VERSION
@@ -42,7 +44,20 @@ services:
         fromDatabase:
           name: recoverai-db
           property: connectionString
+      # PUBLIC HACKATHON DEMO POSTURE.
+      #
+      # Authentication is OFF so visitors need no API key. That is only
+      # permitted because DEMO_MODE and ALLOW_MOCK_PROVIDERS_IN_PRODUCTION are
+      # both set below: config refuses to start an unauthenticated production
+      # service on real providers, so an open API can never touch real money.
+      #
+      # To return to a protected deployment: set AUTH_ENABLED=true, set
+      # API_AUTH_TOKEN, and remove DEMO_MODE.
       - key: AUTH_ENABLED
+        value: 'false'
+      - key: DEMO_MODE
+        value: 'true'
+      - key: ALLOW_MOCK_PROVIDERS_IN_PRODUCTION
         value: 'true'
       # Generate with: openssl rand -hex 32   (min 16 characters)
       - key: API_AUTH_TOKEN
@@ -50,12 +65,21 @@ services:
       # Exact origin of the static site below. No trailing slash, no wildcard.
       - key: CORS_ORIGINS
         sync: false
+      # DEMO POSTURE: both providers are mocked.
+      #
+      # The mock AI provider is deterministic and calls no external model, so
+      # the demo incurs NO API spend. The mock payment provider means no
+      # recovery action ever reaches Razorpay.
+      #
+      # For a real deployment set these back to `gemini` / `razorpay` and
+      # supply the credentials below (each is `sync: false`, so no secret is
+      # ever committed to this file).
       - key: AI_PROVIDER
-        value: gemini
+        value: mock
       - key: GEMINI_API_KEY
         sync: false
       - key: PAYMENT_PROVIDER
-        value: razorpay
+        value: mock
       # Test-mode keys only. Startup fails on an rzp_live_ key by design.
       - key: RAZORPAY_KEY_ID
         sync: false

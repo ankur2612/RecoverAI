@@ -13,6 +13,8 @@
     "test": "node --experimental-strip-types --test \"tests/**/*.test.ts\"",
     "migrate": "node --experimental-strip-types src/db/migrate.ts",
     "migrate:prod": "node dist/db/migrate.js",
+    "demo:ensure": "node --experimental-strip-types src/datasets/demo-cli.ts",
+    "demo:ensure:prod": "node dist/datasets/demo-cli.js",
     "evaluate": "node --experimental-strip-types src/analytics/evaluate-cli.ts",
     "seed": "node --experimental-strip-types src/datasets/cli.ts",
     "test:db": "node --experimental-strip-types --test \"tests/**/*.test.ts\""

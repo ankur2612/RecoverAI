@@ -86,6 +86,8 @@ export interface AppConfig {
 
   demo: {
     apiTimeoutRate: number;
+    /** True when this deployment is a public demo running on simulated data. */
+    mode: boolean;
   };
 }
 
@@ -282,6 +284,27 @@ function allowMockInProduction(env: Env): boolean {
   );
 }
 
+/**
+ * Whether this deployment is a PUBLIC DEMO rather than a real operator console.
+ *
+ * Defaults to false, so nothing changes for an ordinary deployment: production
+ * still requires authentication unless someone deliberately types this out.
+ * It is deliberately a separate switch from AUTH_ENABLED, because
+ * `AUTH_ENABLED=false` alone must keep failing in production — an operator who
+ * merely forgot the token gets the original error, not an open API.
+ *
+ * A demo deployment is only coherent when nothing real is reachable: the
+ * production guards below therefore require the mock providers alongside it,
+ * so an open API can never be pointed at a live payment provider.
+ */
+function demoModeEnabled(env: Env): boolean {
+  return readBool(
+    env,
+    'DEMO_MODE',
+    false,
+  );
+}
+
 export function loadConfig(
   env: Env = process.env,
 ): AppConfig {
@@ -444,12 +467,34 @@ export function loadConfig(
     );
   }
 
+  /*
+   * Production requires authentication, with ONE deliberate exception: a
+   * public demo that has also acknowledged mock providers. Both switches must
+   * be typed out, so no single forgotten variable can open a real deployment.
+   */
   if (
     nodeEnv === 'production' &&
-    !authEnabled
+    !authEnabled &&
+    !(demoModeEnabled(env) && allowMockInProduction(env))
   ) {
     throw new ConfigError(
-      'NODE_ENV=production requires AUTH_ENABLED=true.',
+      'NODE_ENV=production requires AUTH_ENABLED=true. For a public demo, set ' +
+        'DEMO_MODE=true and ALLOW_MOCK_PROVIDERS_IN_PRODUCTION=true instead — ' +
+        'a demo must run on mock providers.',
+    );
+  }
+
+  /*
+   * A demo must never be able to touch a real payment provider: an open API
+   * plus live credentials would let any visitor move real money.
+   */
+  if (
+    demoModeEnabled(env) &&
+    !authEnabled &&
+    paymentProvider !== 'mock'
+  ) {
+    throw new ConfigError(
+      'DEMO_MODE=true without authentication requires PAYMENT_PROVIDER=mock.',
     );
   }
 
@@ -702,6 +747,8 @@ export function loadConfig(
         0,
         1,
       ),
+
+      mode: demoModeEnabled(env),
     },
   };
 }
@@ -725,6 +772,12 @@ export function redactedConfig(config: AppConfig) {
     simulated:
       config.payments.provider === 'mock' ||
       config.ai.provider === 'mock',
+
+    /**
+     * Public demo posture. Safe to expose: it is a statement about what this
+     * deployment is, not a credential.
+     */
+    demoMode: config.demo.mode,
 
     /**
      * Safe to expose because these are origins, not secrets.

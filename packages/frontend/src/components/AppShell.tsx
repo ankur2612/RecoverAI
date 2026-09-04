@@ -154,6 +154,44 @@ function HealthIndicator() {
   );
 }
 
+/**
+ * Public-demo banner.
+ *
+ * Shares the ['health'] query key with HealthIndicator, so this adds no extra
+ * request — react-query serves both from one cached result.
+ *
+ * Deliberately states that the data is SIMULATED. The demo must never be
+ * mistaken for real Razorpay customer data, so the wording names the fact
+ * plainly rather than hinting at it.
+ */
+function DemoBanner() {
+  const { data } = useQuery({
+    queryKey: ['health'],
+    queryFn: ({ signal }) => api.health(signal),
+    refetchInterval: 60_000,
+    retry: 1,
+  });
+
+  if (data?.config.demoMode !== true) return null;
+
+  return (
+    <div
+      role="status"
+      className="border-b border-attention/30 bg-attention/10 px-4 py-2 sm:px-6 lg:px-8"
+    >
+      <div className="mx-auto flex max-w-[1400px] flex-wrap items-center gap-x-2 gap-y-1 text-[12.5px]">
+        <span className="rounded bg-attention/20 px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-attention">
+          Demo Mode
+        </span>
+        <span className="text-ink-muted">
+          Using simulated payment data. No real payments, customers, or Razorpay accounts are
+          involved, and no recovery action leaves this environment.
+        </span>
+      </div>
+    </div>
+  );
+}
+
 export function AppShell({ children }: { children: ReactNode }) {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const location = useLocation();
@@ -262,6 +300,8 @@ export function AppShell({ children }: { children: ReactNode }) {
             </div>
           </div>
         </header>
+
+        <DemoBanner />
 
         <main className="px-4 py-6 sm:px-6 lg:px-8">
           <div className="mx-auto max-w-[1400px]">{children}</div>

@@ -315,6 +315,12 @@ export interface HealthResponse {
     databaseConfigured: boolean;
     /** True when either the payment or AI provider is mocked. Never a credential. */
     simulated: boolean;
+    /**
+     * True when this deployment is a declared PUBLIC DEMO running on
+     * simulated data. Optional so an older backend (which omits the field)
+     * still typechecks against this client.
+     */
+    demoMode?: boolean;
     // `model` is OMITTED from the JSON entirely when the provider is mock,
     // so it is optional rather than `string | undefined` — a consumer must
     // handle its absence, not merely a null value.

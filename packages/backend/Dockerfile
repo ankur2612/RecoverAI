@@ -33,7 +33,11 @@ COPY --from=build /app/packages/backend/dist ./packages/backend/dist
 USER node
 
 EXPOSE 8080
-# Apply pending migrations, then start the API. `&&` short-circuits: if the
-# migration runner exits non-zero the server never starts, so the container
-# fails loudly instead of serving traffic against a missing schema.
-CMD ["sh", "-c", "node packages/backend/dist/db/migrate.js && node packages/backend/dist/index.js"]
+# Apply pending migrations, ensure demo data, then start the API. `&&`
+# short-circuits: if the migration runner exits non-zero the server never
+# starts, so the container fails loudly instead of serving traffic against a
+# missing schema.
+#
+# The demo step is a no-op unless DEMO_MODE=true, and it exits 0 even on
+# failure, so it can never block an ordinary deployment from starting.
+CMD ["sh", "-c", "node packages/backend/dist/db/migrate.js && node packages/backend/dist/datasets/demo-cli.js && node packages/backend/dist/index.js"]
