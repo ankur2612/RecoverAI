@@ -24,12 +24,16 @@ COPY packages/backend/package.json ./packages/backend/
 COPY packages/frontend/package.json ./packages/frontend/
 RUN npm ci --workspace @recoverai/backend --include-workspace-root --omit=dev && npm cache clean --force
 
+# The build stage's `npm run build` already copies the .sql migrations into
+# dist/db/migrations, so this single COPY carries both the compiled runner and
+# its migration assets.
 COPY --from=build /app/packages/backend/dist ./packages/backend/dist
-# Migrations are .sql assets, not compiled output, so copy them explicitly.
-COPY packages/backend/src/db/migrations ./packages/backend/dist/db/migrations
 
 # Run unprivileged: the node image ships a non-root `node` user.
 USER node
 
 EXPOSE 8080
-CMD ["node", "packages/backend/dist/index.js"]
+# Apply pending migrations, then start the API. `&&` short-circuits: if the
+# migration runner exits non-zero the server never starts, so the container
+# fails loudly instead of serving traffic against a missing schema.
+CMD ["sh", "-c", "node packages/backend/dist/db/migrate.js && node packages/backend/dist/index.js"]

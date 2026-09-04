@@ -24,7 +24,13 @@ services:
     # which the TypeScript build requires. NODE_ENV is NOT set to production
     # at build time — that would trigger --omit=dev and remove the compiler.
     buildCommand: npm ci && npm run build --workspace @recoverai/backend
-    startCommand: node packages/backend/dist/index.js
+    # Migrations run at START, not at build: the build step has no access to
+    # DATABASE_URL, and a released instance must apply pending migrations
+    # before serving. `&&` short-circuits, so a failed migration aborts the
+    # start and the old instance keeps serving instead of one with a missing
+    # schema. The runner is idempotent (schema_migrations), so restarts and
+    # scale-ups re-run it harmlessly.
+    startCommand: node packages/backend/dist/db/migrate.js && node packages/backend/dist/index.js
     healthCheckPath: /api/health
     envVars:
       - key: NODE_VERSION
